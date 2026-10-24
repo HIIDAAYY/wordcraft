@@ -44,4 +44,3 @@ android_logger = { version = "0.15", default-features = false }
 # The Java side of the shell (file pickers, clipboard, printing, typed text): the same JNI
 # version android-activity already brings in.
 jni = "0.22.4"
-ndk-context = "0.1"

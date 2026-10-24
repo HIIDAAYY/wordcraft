@@ -161,13 +161,13 @@ impl Store {
         // A process another part of the app (or a test) is starting holds the lock for a moment
         // (a forked child shares it until it execs): wait that out, but not a live owner.
         for _ in 0..LOCK_RETRIES {
-            match file.try_lock() {
+            match try_lock(&file) {
                 Ok(()) => return Ok(file),
                 Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(10)),
                 Err(e) => return Err(format!("recovery copy is in use or cannot be locked: {e}")),
             }
         }
-        file.try_lock().map_err(|e| format!("recovery copy is in use or cannot be locked: {e}"))?;
+        try_lock(&file).map_err(|e| format!("recovery copy is in use or cannot be locked: {e}"))?;
         Ok(file)
     }
     fn acquire(&mut self, id: &str) -> Result<(), String> {
@@ -1084,5 +1084,22 @@ mod tests {
         s.run("file.encrypt", &json!({"password": "synthetic-password"})).unwrap();
         settle(&mut s);
         assert_eq!(s.recovery_documents().len(), 1);
+    }
+}
+
+/// Takes `file`'s exclusive lock without waiting, released when the file is closed. std's
+/// `File::try_lock` has no Android implementation (it always reports "unsupported" there), so
+/// Android takes the same `flock` lock through rustix's safe binding.
+fn try_lock(file: &File) -> Result<(), fs::TryLockError> {
+    #[cfg(target_os = "android")]
+    {
+        rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive).map_err(|e| {
+            let e = io::Error::from(e);
+            if e.kind() == io::ErrorKind::WouldBlock { fs::TryLockError::WouldBlock } else { fs::TryLockError::Error(e) }
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        file.try_lock()
     }
 }

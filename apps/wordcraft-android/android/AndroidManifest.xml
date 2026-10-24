@@ -14,7 +14,7 @@
         android:allowBackup="true"
         android:resizeableActivity="true"
         android:extractNativeLibs="true"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
 
         <!-- One window: a document opened from another app arrives in the running app.
              Rotating, resizing or a keyboard coming and going never restarts it. -->
@@ -22,7 +22,7 @@
             android:name="wordcraft.android.WordCraftActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:windowSoftInputMode="adjustResize|stateHidden"
+            android:windowSoftInputMode="adjustResize|stateAlwaysHidden"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|locale|layoutDirection|fontScale">
             <meta-data android:name="android.app.lib_name" android:value="wordcraft_android" />
 

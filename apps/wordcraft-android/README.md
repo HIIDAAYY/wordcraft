@@ -25,21 +25,25 @@ from the last several years).
 | Two-finger tap | Right-click (the context menu) |
 | Back button | Escape: closes a menu, a dialog or File view |
 
-The on-screen keyboard appears when the page or a text box is ready for typing. A hardware
-keyboard and its shortcuts (Ctrl+S, Ctrl+B, …) work as on the desktop.
+The on-screen keyboard appears when you tap the page or a text box, and goes away when nothing
+takes typing; the app keeps clear of it (and of the status and navigation bars). A hardware
+keyboard and its shortcuts (Ctrl+S, Ctrl+B, Ctrl+Z, …) work as on the desktop.
 
 ## Files
 
 - **Open** (File › Open, or Insert › Pictures) shows Android's file picker: device storage,
   an SD card, Google Drive and other installed storage apps.
 - **Open with WordCraft** from a file manager, a mail attachment or another app's Share also works.
-- **Save** a document opened from a picker writes it back where it came from. The first save of
-  a new document, or a save the app may no longer write back, asks where with Android's save
-  picker. Export (PDF, PNG, …) always asks.
+- **Save** (Ctrl+S or File › Save) of a document opened from a picker, or saved once already,
+  writes it back to that file. A new document, **Save As** and every **Export** (PDF, PNG, …)
+  ask where with Android's save picker, so a new document never lands on an older file that
+  happens to share its name. The document takes the name you give it in the picker.
 - **Print** uses Android's print dialog (Wi-Fi printers, Save as PDF, cloud print services).
 - **Copy and Paste** share the system clipboard with other apps (text).
 - Settings, added fonts, the custom dictionary and recovery files stay in the app's private
   storage. If Android closes the app in the background, unsaved work comes back when it reopens.
+- File › Open doesn't list recent documents: Android gives the app a file's contents, not a path
+  it could open again. The system picker behind **Browse…** has its own Recent list.
 
 ## Building
 
@@ -68,14 +72,19 @@ to the run; a tag `android-v*` publishes a release. Give it the secrets `ANDROID
 | `src/lib.rs` | `android_main`, the entry point NativeActivity calls |
 | `src/shell.rs` | storage folders, `Services` (open, save, print, clipboard), preferences, recovery, the keyboard |
 | `src/touch.rs` | finger gestures → clicks, scrolling and drag-select (tested on the desktop) |
-| `src/mailbox.rs` | the inbox the Java side answers through (tested on the desktop) |
+| `src/keys.rs` | on-screen keyboard keys → egui keys and modifiers (tested on the desktop) |
+| `src/mailbox.rs` | the inbox the Java side answers through, in order (tested on the desktop) |
 | `src/bridge.rs` | JNI calls into the activity (the only `unsafe` in the port) |
-| `android/java/…/WordCraftActivity.java` | `NativeActivity` subclass: pickers, saving, printing, clipboard, keyboard text |
+| `android/java/…/WordCraftActivity.java` | `NativeActivity` subclass: pickers, saving, printing, clipboard, the keyboard's text field, window insets |
+| `winit-android-modifiers.patch` | applied to winit for the Android build only: reports Shift/Ctrl/Alt, which winit 0.30 never does on Android |
 | `android/AndroidManifest.xml` | the app, its launcher entry and the file types it opens |
 
-The rest of WordCraft is shared unchanged with the desktop and web builds; the one Android
-change outside this folder adds Android's system font folders to the font database
-(`crates/fonts/src/fontdb.rs`).
+The rest of WordCraft is shared with the desktop and web builds. Android changes outside this
+folder: the font database scans Android's system font folders (`crates/fonts/src/fontdb.rs`),
+recovery copies are locked with `flock` through rustix, since std's `File::try_lock` is
+unsupported on Android (`crates/engine/src/recovery/desktop.rs`), and File › Open doesn't offer
+WordCraft's own file browser, which on Android could only show the app's private folders
+(`crates/ui-egui/src/backstage.rs`).
 
 ## Known limits
 
@@ -83,7 +92,18 @@ change outside this folder adds Android's system font folders to the font databa
 - The interface is the desktop one: it fits a tablet in landscape best; a phone is cramped.
 - A mouse or trackpad works as a finger (no hover, no wheel).
 - Pictures copied in another app don't paste yet (text does).
-- Some on-screen keyboards' word suggestions and autocorrect don't reach the app; typing
-  letter by letter always does.
+- The on-screen keyboard can't see the document's text, so its suggestions work word by word
+  and it doesn't capitalize sentences itself (WordCraft's own AutoCorrect does).
+- Two-finger gestures (pinch zoom, two-finger tap), double tap and portrait rotation are built
+  and unit-tested but were not exercised on a device in the first test pass.
+
+## Tested on
+
+Samsung Galaxy Tab S9 (SM-X716B), Android 16, Vulkan on Adreno 740, Samsung Keyboard: start-up,
+ribbon commands, typing with the on-screen keyboard (spaces, Backspace, Enter) and a hardware
+keyboard (Ctrl+Z/Y/S, F12), scrolling and fling, long-press selection, copy and paste, Open,
+Save, Save As, write-back on Save, cancelling a save, Export to PDF, the print dialog, Back,
+leaving and returning to the app, and the layout around the status bar, navigation bar and
+keyboard.
 
 WordCraft is by the ArtCraft team, MIT OR Apache-2.0. This port is not made or supported by them.

@@ -36,6 +36,11 @@ js-sys = "0.3"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = { workspace = true }
 
+# File locks for the local recovery copies on Android, where std's `File::try_lock` is
+# unsupported: the kernel's flock through rustix's safe binding (already in the tree).
+[target.'cfg(target_os = "android")'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "fs"] }
+
 [dev-dependencies]
 encoding_rs = { workspace = true }
 zip = { workspace = true }

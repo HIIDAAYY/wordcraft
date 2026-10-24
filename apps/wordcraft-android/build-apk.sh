@@ -62,8 +62,23 @@ WORK="$ROOT/target/android-apk"
 rm -rf "$WORK"
 mkdir -p "$WORK"/{classes,dex,res,apk/lib/$ABI} "$OUT"
 
+echo "==> winit with Android modifier keys"
+# winit 0.30 never reports Shift/Ctrl/Alt on Android, so a hardware keyboard's Ctrl+Z typed "z".
+# winit-android-modifiers.patch fixes that; it is applied to a copy of the locked winit for this
+# build only (Cargo.lock is put back afterwards, the desktop builds never see it).
+WINIT_VERSION="$(awk '/^name = "winit"$/{getline; gsub(/version = |"/, ""); print; exit}' "$ROOT/Cargo.lock")"
+(cd "$ROOT" && cargo fetch --target "$TARGET" -q)
+WINIT_SRC="$(ls -d "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/"winit-$WINIT_VERSION" | head -1)"
+WINIT_PATCHED="$ROOT/target/android-winit/winit-$WINIT_VERSION"
+rm -rf "$WINIT_PATCHED"
+mkdir -p "$(dirname "$WINIT_PATCHED")"
+cp -R "$WINIT_SRC" "$WINIT_PATCHED"
+patch -s -p1 -d "$WINIT_PATCHED" <"$HERE/winit-android-modifiers.patch"
+cp "$ROOT/Cargo.lock" "$WORK/Cargo.lock.orig"
+trap 'cp "$WORK/Cargo.lock.orig" "$ROOT/Cargo.lock"' EXIT
+
 echo "==> Rust ($PROFILE, $TARGET)"
-CARGO_FLAGS=(build -p wordcraft-android --lib --target "$TARGET")
+CARGO_FLAGS=(build -p wordcraft-android --lib --target "$TARGET" --config "patch.crates-io.winit.path=\"$WINIT_PATCHED\"")
 [[ "$PROFILE" == release ]] && CARGO_FLAGS+=(--release)
 (cd "$ROOT" && cargo "${CARGO_FLAGS[@]}")
 SO="$ROOT/target/$TARGET/$PROFILE/libwordcraft_android.so"

@@ -12,6 +12,9 @@
 //!   with does the same.
 //! - Save and Export go through Android's save picker (a later save to the same name writes back
 //!   to the file it came from without asking again, while the app keeps permission for it).
+//! - The on-screen keyboard types into the activity's own text field, which passes text and keys
+//!   through the inbox in order ([`keys`]); the app keeps clear of the status bar, navigation bar
+//!   and keyboard (`insets`).
 //! - Fingers: tap clicks, swipe scrolls, long press then drag selects, two fingers pinch-zoom,
 //!   and a two-finger tap opens the context menu ([`touch`]). The system Back button is Escape.
 //! - Settings, added fonts, the user dictionary and recovery files live in the app's private
@@ -20,7 +23,9 @@
 //! Build the APK with `apps/wordcraft-android/build-apk.sh` (see the README beside it).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod keys;
 pub mod mailbox;
+pub mod saving;
 pub mod touch;
 
 #[cfg(target_os = "android")]

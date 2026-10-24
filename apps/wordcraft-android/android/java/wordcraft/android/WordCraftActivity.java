@@ -25,10 +25,19 @@ import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintDocumentInfo;
 import android.print.PrintManager;
+import android.os.Build;
 import android.provider.OpenableColumns;
+import android.text.InputType;
 import android.util.Log;
+import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Toast;
 
@@ -58,6 +67,12 @@ public class WordCraftActivity extends NativeActivity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final AtomicLong seq = new AtomicLong();
     private ClipboardManager clipboard;
+    /** What the on-screen keyboard types into (see TextInput). */
+    private TextInput textInput;
+    /** The insets last reported, so an unchanged layout reports nothing. */
+    private String lastInsets = "";
+    /** Whether the app wants the on-screen keyboard (UI thread only). */
+    private boolean keyboardWanted = false;
 
     // UI thread only: the save waiting for the save picker.
     private long pendingTicket = -1;
@@ -69,10 +84,19 @@ public class WordCraftActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        View decor = getWindow().getDecorView();
-        decor.setFocusable(true);
-        decor.setFocusableInTouchMode(true);
         new File(getFilesDir(), "inbox").mkdirs();
+        deleteSharedPreferences("saved-locations");
+        // The keyboard's text field: one invisible pixel in the corner.
+        textInput = new TextInput(this);
+        addContentView(textInput, new ViewGroup.LayoutParams(1, 1));
+        // Android draws the app under the status bar, navigation bar and keyboard: tell the app
+        // how much of each edge they cover, so it keeps its content clear of them.
+        View decor = getWindow().getDecorView();
+        decor.setOnApplyWindowInsetsListener((v, insets) -> {
+            reportInsets(insets);
+            return v.onApplyWindowInsets(insets);
+        });
+        darkSystemBarIcons();
         clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (clipboard != null) {
             clipboard.addPrimaryClipChangedListener(this::mirrorClipboard);
@@ -96,6 +120,11 @@ public class WordCraftActivity extends NativeActivity {
         // Android lets only the focused app read the clipboard.
         if (hasFocus) {
             mirrorClipboard();
+            // Coming back from a picker that had the keyboard up: Android brings it back with
+            // the window. Only the app decides whether it shows.
+            if (!keyboardWanted) {
+                setKeyboardVisible(false);
+            }
         }
     }
 
@@ -144,18 +173,21 @@ public class WordCraftActivity extends NativeActivity {
         });
     }
 
-    /** Save the staged file at path as name: back to the file it was opened from when the app may
-     *  still write there, otherwise wherever the user picks. Reports ticket's outcome. */
-    public void saveDocument(final long ticket, final String path, final String name, final String mime) {
+    /** Save the staged file at path as name. With writeBack, over the file of that name the
+     *  document was opened from or last saved to, when the app may still write there; otherwise
+     *  (Save As, a first save, an export, or no such file) wherever the user picks. Reports the
+     *  ticket's outcome with the name the file was saved under. */
+    public void saveDocument(final long ticket, final String path, final String name, final String mime,
+            final boolean writeBack) {
         runOnUiThread(() -> {
             final File staged = new File(path);
-            final Uri known = knownUri(name);
+            final Uri known = writeBack ? knownUri(name) : null;
             if (known != null) {
                 io.execute(() -> {
                     try {
                         copyFileToUri(staged, known);
                         staged.delete();
-                        postSave(ticket, "ok", null);
+                        postSave(ticket, "ok", name);
                     } catch (Exception e) {
                         Log.w(TAG, "can't write back to " + known + ", asking where to save", e);
                         forget(name);
@@ -192,16 +224,20 @@ public class WordCraftActivity extends NativeActivity {
     /** Show or hide the on-screen keyboard. */
     public void setKeyboardVisible(final boolean visible) {
         runOnUiThread(() -> {
-            View decor = getWindow().getDecorView();
+            keyboardWanted = visible;
             InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-            if (imm == null) {
+            if (imm == null || textInput == null) {
                 return;
             }
             if (visible) {
-                decor.requestFocus();
-                imm.showSoftInput(decor, InputMethodManager.SHOW_FORCED);
+                textInput.requestFocus();
+                // Bind the keyboard to the text field afresh: after another window (a picker) had
+                // the keyboard, Android can show it again still bound to that window's connection,
+                // and the keys then reach nothing.
+                imm.restartInput(textInput);
+                imm.showSoftInput(textInput, 0);
             } else {
-                imm.hideSoftInputFromWindow(decor.getWindowToken(), 0);
+                imm.hideSoftInputFromWindow(textInput.getWindowToken(), 0);
             }
         });
     }
@@ -237,7 +273,6 @@ public class WordCraftActivity extends NativeActivity {
         } else if (requestCode == REQ_SAVE) {
             final long ticket = pendingTicket;
             final File staged = pendingFile;
-            final String name = pendingName;
             pendingTicket = -1;
             pendingFile = null;
             pendingName = null;
@@ -256,8 +291,11 @@ public class WordCraftActivity extends NativeActivity {
             io.execute(() -> {
                 try {
                     copyFileToUri(staged, uri);
-                    remember(name, uri);
-                    postSave(ticket, "ok", null);
+                    // Remembered under the name the user gave it, which the document now takes;
+                    // never under the suggested name, which a later new document may share.
+                    String saved = displayName(uri);
+                    remember(saved, uri);
+                    postSave(ticket, "ok", saved);
                 } catch (Exception e) {
                     Log.e(TAG, "save failed", e);
                     postSave(ticket, "fail", e.getMessage());
@@ -401,7 +439,9 @@ public class WordCraftActivity extends NativeActivity {
     // ---- Files the app may write back to ---------------------------------------------------
 
     private SharedPreferences known() {
-        return getSharedPreferences("saved-locations", MODE_PRIVATE);
+        // v2: the first builds also filed a file under the name the app suggested, which a later
+        // new document could share; those entries are dropped with the old store.
+        return getSharedPreferences("saved-locations-v2", MODE_PRIVATE);
     }
 
     private void remember(String name, Uri uri) {
@@ -491,6 +531,108 @@ public class WordCraftActivity extends NativeActivity {
         }
     }
 
+    // ---- Keyboard text and keys -------------------------------------------------------------
+
+    /** Text the keyboard typed. Enter and Tab inside it go as keys, so they act as keys do. */
+    void postText(String text) {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        StringBuilder run = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\n' || c == '\t') {
+                if (run.length() > 0) {
+                    post("text", run.toString().getBytes(StandardCharsets.UTF_8));
+                    run.setLength(0);
+                }
+                postKey(c == '\n' ? KeyEvent.KEYCODE_ENTER : KeyEvent.KEYCODE_TAB, 0);
+            } else {
+                run.append(c);
+            }
+        }
+        if (run.length() > 0) {
+            post("text", run.toString().getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    void postKey(int keyCode, int metaState) {
+        post("key", (keyCode + "\n" + metaState).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** A key event the keyboard sent: a printable key without Ctrl or Alt is text, the rest keys. */
+    void postKeyEvent(KeyEvent event) {
+        if (event.getAction() != KeyEvent.ACTION_DOWN) {
+            if (event.getAction() == KeyEvent.ACTION_MULTIPLE && event.getCharacters() != null) {
+                postText(event.getCharacters());
+            }
+            return;
+        }
+        int meta = event.getMetaState();
+        boolean shortcut = (meta & (KeyEvent.META_CTRL_ON | KeyEvent.META_ALT_ON)) != 0;
+        int code = event.getKeyCode();
+        if (!shortcut && code != KeyEvent.KEYCODE_ENTER && code != KeyEvent.KEYCODE_TAB) {
+            int ch = event.getUnicodeChar(meta);
+            if (ch != 0 && (ch & KeyCharacterMap.COMBINING_ACCENT) == 0 && !Character.isISOControl(ch)) {
+                postText(new String(Character.toChars(ch)));
+                return;
+            }
+        }
+        postKey(code, meta);
+    }
+
+    // ---- Window insets ---------------------------------------------------------------------
+
+    private void reportInsets(WindowInsets insets) {
+        int left, top, right, bottom;
+        if (Build.VERSION.SDK_INT >= 30) {
+            android.graphics.Insets i = insets.getInsets(WindowInsets.Type.systemBars()
+                    | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+            left = i.left;
+            top = i.top;
+            right = i.right;
+            bottom = i.bottom;
+        } else {
+            left = insets.getSystemWindowInsetLeft();
+            top = insets.getSystemWindowInsetTop();
+            right = insets.getSystemWindowInsetRight();
+            bottom = insets.getSystemWindowInsetBottom();
+        }
+        String text = left + " " + top + " " + right + " " + bottom;
+        if (!text.equals(lastInsets)) {
+            lastInsets = text;
+            post("insets", text.getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    /** Until the app says otherwise: its default look is light, so dark bar icons. */
+    private void darkSystemBarIcons() {
+        applyBarIcons(true);
+    }
+
+    /** The app's background behind the status and navigation bars is light (dark icons) or dark
+     *  (light icons). Called from Rust whenever the app's theme changes; the system's own dark
+     *  mode doesn't decide this, the app's look does. */
+    public void setLightSystemBars(final boolean light) {
+        runOnUiThread(() -> applyBarIcons(light));
+    }
+
+    private void applyBarIcons(boolean light) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                c.setSystemBarsAppearance(light ? mask : 0, mask);
+            }
+        } else {
+            View decor = getWindow().getDecorView();
+            int flags = decor.getSystemUiVisibility();
+            decor.setSystemUiVisibility(light ? flags | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                    : flags & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        }
+    }
+
     private void toast(final String message) {
         runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
     }
@@ -536,6 +678,150 @@ public class WordCraftActivity extends NativeActivity {
             } catch (IOException e) {
                 callback.onWriteFailed(e.getMessage());
             }
+        }
+    }
+
+    /**
+     * An invisible view the on-screen keyboard types into. NativeActivity's own view has no
+     * InputConnection, so keyboards fall back to a mode that drops spaces and suggestions. This
+     * one takes everything the keyboard sends and passes it to the app through the inbox, in
+     * order: committed text as text, a word still being composed as the difference from the
+     * last version (backspaces, then the new letters), and every other key as a key.
+     */
+    static final class TextInput extends View {
+        private final WordCraftActivity activity;
+
+        TextInput(WordCraftActivity activity) {
+            super(activity);
+            this.activity = activity;
+            setFocusable(true);
+            setFocusableInTouchMode(true);
+        }
+
+        @Override
+        public boolean onCheckIsTextEditor() {
+            return true;
+        }
+
+        @Override
+        public InputConnection onCreateInputConnection(EditorInfo out) {
+            // No automatic capitals from the keyboard: it can't see the document, and WordCraft's
+            // own AutoCorrect capitalizes sentences as Word does.
+            out.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
+            out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                    | EditorInfo.IME_ACTION_NONE;
+            out.initialSelStart = 0;
+            out.initialSelEnd = 0;
+            return new Connection(this, activity);
+        }
+    }
+
+    static final class Connection extends BaseInputConnection {
+        private final WordCraftActivity activity;
+        /** The word the keyboard is composing, as already typed into the document. */
+        private String composing = "";
+
+        Connection(View view, WordCraftActivity activity) {
+            super(view, false);
+            this.activity = activity;
+        }
+
+        /** Change what the document holds for the composing word from composing to next. */
+        private void retype(String next) {
+            int common = 0;
+            int max = Math.min(composing.length(), next.length());
+            while (common < max && composing.charAt(common) == next.charAt(common)) {
+                common++;
+            }
+            // Don't split a surrogate pair.
+            if (common > 0 && Character.isHighSurrogate(composing.charAt(common - 1))) {
+                common--;
+            }
+            int remove = composing.codePointCount(common, composing.length());
+            for (int i = 0; i < remove; i++) {
+                activity.postKey(KeyEvent.KEYCODE_DEL, 0);
+            }
+            activity.postText(next.substring(common));
+        }
+
+        @Override
+        public boolean commitText(CharSequence text, int newCursorPosition) {
+            retype(text == null ? "" : text.toString());
+            composing = "";
+            return true;
+        }
+
+        @Override
+        public boolean setComposingText(CharSequence text, int newCursorPosition) {
+            String next = text == null ? "" : text.toString();
+            retype(next);
+            composing = next;
+            return true;
+        }
+
+        @Override
+        public boolean finishComposingText() {
+            composing = "";
+            return true;
+        }
+
+        @Override
+        public boolean setComposingRegion(int start, int end) {
+            // The app doesn't share its text with the keyboard, so there is nothing to recompose.
+            return true;
+        }
+
+        @Override
+        public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+            if (!composing.isEmpty()) {
+                retype("");
+                composing = "";
+                beforeLength = 0;
+            }
+            for (int i = 0; i < beforeLength; i++) {
+                activity.postKey(KeyEvent.KEYCODE_DEL, 0);
+            }
+            for (int i = 0; i < afterLength; i++) {
+                activity.postKey(KeyEvent.KEYCODE_FORWARD_DEL, 0);
+            }
+            return true;
+        }
+
+        @Override
+        public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
+            return deleteSurroundingText(beforeLength, afterLength);
+        }
+
+        @Override
+        public boolean sendKeyEvent(KeyEvent event) {
+            if (!composing.isEmpty() && event.getAction() == KeyEvent.ACTION_DOWN) {
+                composing = "";
+            }
+            activity.postKeyEvent(event);
+            return true;
+        }
+
+        @Override
+        public boolean performEditorAction(int actionCode) {
+            activity.postKey(KeyEvent.KEYCODE_ENTER, 0);
+            return true;
+        }
+
+        @Override
+        public CharSequence getTextBeforeCursor(int length, int flags) {
+            // Keyboards look here to decide on capitals and what Backspace deletes: an empty
+            // answer makes them send Backspace as a key, which the app handles.
+            return "";
+        }
+
+        @Override
+        public CharSequence getTextAfterCursor(int length, int flags) {
+            return "";
+        }
+
+        @Override
+        public int getCursorCapsMode(int reqModes) {
+            return 0;
         }
     }
 }

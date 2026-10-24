@@ -123,6 +123,10 @@ pub struct Services {
     /// Web: hand bytes to the browser as a download. An error means no download started (the
     /// browser can't tell the page whether the user then kept the file).
     pub download: Option<Box<dyn Fn(&str, &[u8]) -> Result<(), String>>>,
+    /// Told the command (`file.save`, `file.saveAs`, `file.exportPdf`…) just before each
+    /// `download`, for a host that saves a plain Save of an opened file in place but asks where
+    /// for everything else (Android). The web host doesn't need it.
+    pub download_command: Option<Box<dyn Fn(&str)>>,
     /// Web: saves that `download` started and that finish later (the browser's save picker,
     /// #1315). The hook starts a ticket for such a save and reports how it ended; until then the
     /// document's save isn't confirmed, and a New/Open held back by the Save Changes prompt waits.
@@ -1031,6 +1035,9 @@ impl WordApp {
             let saves = self.services.async_saves.clone();
             if let Some(saves) = &saves {
                 let _ = saves.take_started();
+            }
+            if let Some(tell) = &self.services.download_command {
+                tell(id);
             }
             if let Some(d) = &self.services.download
                 && let Err(e) = d(&name, &bytes)

@@ -1,7 +1,7 @@
 //! The Android shell: storage folders, `Services` backed by the Java activity, the inbox,
 //! finger gestures, the on-screen keyboard and the eframe runner.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -11,7 +11,8 @@ use wordcraft_ui_egui::async_saves::{AsyncSaves, SaveOutcome};
 use wordcraft_ui_egui::{Inbox, Services, UiState, WordApp};
 
 use crate::mailbox::{self, Message, Outcome};
-use crate::{bridge, touch::Touches};
+use crate::saving::Saving;
+use crate::{bridge, keys, touch::Touches};
 
 /// The app's private folders (under `Context.getFilesDir()`, the same folders the Java side uses).
 #[derive(Clone)]
@@ -59,6 +60,7 @@ pub fn run(android: AndroidApp) {
         log::info!("user fonts: {} loaded", user_fonts_loaded.len());
     }
 
+    bridge::init(&android);
     let options = eframe::NativeOptions { android_app: Some(android), ..Default::default() };
     let result = eframe::run_native(
         "WordCraft",
@@ -81,13 +83,24 @@ struct Shell {
     inbox: Inbox,
     saves: AsyncSaves,
     touches: Touches,
-    /// Pickers and saves started and not yet answered: while any are, the app looks at the inbox
-    /// a few times a second (an answer doesn't wake it).
+    /// Pickers and saves started and not yet answered (logged when the app closes with any).
     waiting: Rc<Cell<u32>>,
     /// The keyboard as last asked of the activity.
     keyboard: bool,
+    /// Where the last tap or press began, and whether File view was open then: a tap shows the
+    /// keyboard only when it lands where typing goes, and not when it opened a document.
+    press: Option<(egui::Pos2, bool)>,
+    /// Messages for the status bar from the host (a picker that couldn't open).
+    messages: Rc<RefCell<Vec<String>>>,
     /// The preferences as last written.
     prefs_written: Option<String>,
+    /// The window edges covered by system bars or the keyboard (pixels), as the activity last
+    /// reported them.
+    insets: Option<egui::epaint::MarginF32>,
+    /// Saves handed to the activity ([`Saving`]).
+    saving: Rc<RefCell<Saving>>,
+    /// Whether the system bars' icons were last set for a light app (dark icons).
+    light_bars: Option<bool>,
 }
 
 impl Shell {
@@ -95,10 +108,12 @@ impl Shell {
         let inbox = Inbox::default();
         let saves = AsyncSaves::default();
         let waiting = Rc::new(Cell::new(0));
+        let messages = Rc::new(RefCell::new(Vec::new()));
+        let saving = Rc::new(RefCell::new(Saving::default()));
         let region = wordcraft_ui_egui::i18n::system_region();
         let mut session = Session::new(wordcraft_engine::blank_document(&region));
         session.system_region = region;
-        let mut app = WordApp::new(session, services(&dirs, inbox.clone(), saves.clone(), waiting.clone()));
+        let mut app = WordApp::new(session, services(&dirs, inbox.clone(), saves.clone(), waiting.clone(), messages.clone(), saving.clone()));
         let prefs_path = dirs.profile.join("ui.json");
         let stored = std::fs::read(&prefs_path).ok();
         if let Some(ui) = stored.as_deref().and_then(UiState::from_json) {
@@ -121,7 +136,22 @@ impl Shell {
         // through the inbox on the first frame and replaces it.
         app.start_screen();
         let prefs_written = serde_json::to_string(&app.prefs()).ok();
-        Self { app, dirs, inbox, saves, touches: Touches::default(), waiting, keyboard: false, prefs_written }
+        watch_inbox(dirs.inbox.clone(), ctx.clone());
+        Self {
+            app,
+            dirs,
+            inbox,
+            saves,
+            touches: Touches::default(),
+            waiting,
+            keyboard: false,
+            press: None,
+            messages,
+            prefs_written,
+            insets: None,
+            saving,
+            light_bars: None,
+        }
     }
 
     /// Deliver what the Java side left in the inbox.
@@ -131,10 +161,17 @@ impl Shell {
                 Message::Opened { name, bytes } => {
                     log::info!("received {name} ({} bytes)", bytes.len());
                     self.inbox.lock().unwrap_or_else(|e| e.into_inner()).push((name, bytes));
+                    // The opened document takes typing straight away (a hardware keyboard), as on
+                    // the desktop; the on-screen keyboard still waits for a tap.
+                    self.app.canvas.want_focus = true;
                 }
                 Message::PickerClosed => self.waiting.set(self.waiting.get().saturating_sub(1)),
-                Message::Saved { ticket, outcome } => {
+                Message::Saved { ticket, outcome, name } => {
                     self.waiting.set(self.waiting.get().saturating_sub(1));
+                    let command = self.saving.borrow_mut().commands.remove(&ticket);
+                    if let (Outcome::Saved, Some(command), Some(chosen)) = (&outcome, command, name) {
+                        self.saved_as(&command, &chosen);
+                    }
                     let outcome = match outcome {
                         Outcome::Saved => SaveOutcome::Saved,
                         Outcome::Cancelled => SaveOutcome::Cancelled,
@@ -143,8 +180,33 @@ impl Shell {
                     self.saves.finish(ticket, outcome);
                 }
                 Message::Text(text) => raw.events.push(egui::Event::Text(text)),
+                Message::Key { code, meta } => raw.events.extend(keys::press(code, meta)),
+                Message::Insets { left, top, right, bottom } => {
+                    log::info!("window insets: left {left} top {top} right {right} bottom {bottom}");
+                    self.insets = Some(egui::epaint::MarginF32 { left, right, top, bottom });
+                }
             }
         }
+    }
+
+    /// The document was saved (Save or Save As) as the Word file `chosen`; the user may have
+    /// renamed it in the save picker. The document takes that name, as after Save As on the
+    /// desktop: the title says so and the next Save writes back to that file. Exports, and saves
+    /// in formats that don't keep everything, leave the document's name alone.
+    fn saved_as(&mut self, command: &str, chosen: &str) {
+        let word = chosen.rsplit_once('.').is_some_and(|(_, ext)| wordcraft_engine::io::is_word_package(&ext.to_ascii_lowercase()));
+        if matches!(command, "file.save" | "file.saveAs") && word {
+            self.app.session.path = Some(PathBuf::from(chosen));
+        }
+    }
+
+    /// Keep the save hooks' view of the document current, and the Recent list to files this
+    /// device can open again. Android hands the app a file's contents, not a path to it, so a
+    /// document opened or saved here is known only by its name; reopening one goes through
+    /// File › Open, whose system picker has its own Recent list.
+    fn sync(&mut self) {
+        self.saving.borrow_mut().has_file = self.app.session.path.is_some();
+        self.app.ui.recent.retain(|p| Path::new(p).is_absolute());
     }
 
     /// Write the preferences when they changed: Android may stop the app without warning.
@@ -165,6 +227,14 @@ impl Shell {
 impl eframe::App for Shell {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.read_inbox(raw);
+        self.sync();
+        // Keep the app clear of the status bar, the navigation bar, a camera cutout and the
+        // on-screen keyboard: Android draws apps edge to edge, under all of them.
+        if let Some(px) = self.insets {
+            let ppp = ctx.pixels_per_point().max(0.1);
+            let points = egui::epaint::MarginF32 { left: px.left / ppp, right: px.right / ppp, top: px.top / ppp, bottom: px.bottom / ppp };
+            raw.safe_area_insets = Some(egui::SafeAreaInsets(points));
+        }
         for event in &mut raw.events {
             match event {
                 // The system Back button closes what's open, as Escape does.
@@ -181,40 +251,92 @@ impl eframe::App for Shell {
         if self.touches.process(raw) {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
-        if self.waiting.get() > 0 {
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
-        }
         self.app.raw_input_hook(raw);
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let messages = std::mem::take(&mut *self.messages.borrow_mut());
+        for message in messages {
+            self.app.status(message);
+        }
+        self.sync();
         self.app.logic(ctx);
+        self.sync();
         self.store_prefs();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.app.ui(ui);
-        let (wants_keyboard, copied) = ui.ctx().output(|o| {
+        let (pressed_at, released) =
+            ui.ctx().input(|i| (i.pointer.any_pressed().then(|| i.pointer.press_origin()).flatten(), i.pointer.any_released()));
+        if let Some(pos) = pressed_at {
+            self.press = Some((pos, self.app.ui.backstage));
+        }
+        // Android draws the app under the status bar, the navigation bar and the keyboard: run it in
+        // the part of the window they leave free (`content_rect`, from the insets), over the
+        // app's own background.
+        let free = ui.ctx().content_rect();
+        ui.painter().rect_filled(ui.ctx().viewport_rect(), 0.0, ui.visuals().panel_fill);
+        // The status and navigation bars' icons follow the app's theme (the system's dark mode
+        // may differ from WordCraft's own theme setting).
+        let light = !ui.visuals().dark_mode;
+        if self.light_bars != Some(light) {
+            self.light_bars = Some(light);
+            if let Err(e) = bridge::light_system_bars(light) {
+                log::warn!("system bars: {e}");
+            }
+        }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(free), |ui| {
+            ui.set_clip_rect(free);
+            self.app.ui(ui);
+        });
+        let (typing_area, copied) = ui.ctx().output(|o| {
             let copied = o.commands.iter().rev().find_map(|c| match c {
                 egui::OutputCommand::CopyText(t) if !t.is_empty() => Some(t.clone()),
                 _ => None,
             });
-            (o.ime.is_some(), copied)
+            (o.ime.as_ref().map(|ime| ime.rect), copied)
         });
+        // The shell decides when the keyboard shows, not egui-winit (which would show it whenever
+        // the page has focus, even when a document has just been opened to read).
+        ui.ctx().output_mut(|o| o.ime = None);
         if let Some(text) = copied
             && let Err(e) = bridge::set_clipboard(&text)
         {
             log::warn!("clipboard: {e}");
         }
-        if wants_keyboard != self.keyboard {
-            self.keyboard = wants_keyboard;
-            if let Err(e) = bridge::keyboard(wants_keyboard) {
-                log::warn!("keyboard: {e}");
+        match typing_area {
+            // Nothing takes typing: put the keyboard away.
+            None if self.keyboard => {
+                self.keyboard = false;
+                if let Err(e) = bridge::keyboard(false) {
+                    log::warn!("keyboard: {e}");
+                }
             }
+            // A tap where typing goes (anywhere on the page, or a text box), not one that opened a
+            // document from File view: show the keyboard (again, if the user put it away).
+            Some(area) if released => {
+                let page = self.app.canvas.canvas_rect;
+                if let Some((pos, from_file_view)) = self.press.take()
+                    && !from_file_view
+                    && (area.expand(8.0).contains(pos) || page.is_some_and(|r| r.contains(pos)))
+                {
+                    self.keyboard = true;
+                    if let Err(e) = bridge::keyboard(true) {
+                        log::warn!("keyboard: {e}");
+                    }
+                }
+            }
+            _ => {}
+        }
+        if released {
+            self.press = None;
         }
     }
 
     fn on_exit(&mut self) {
+        if self.waiting.get() > 0 {
+            log::info!("closing with {} picker or save answers outstanding", self.waiting.get());
+        }
         self.store_prefs();
         self.app.session.finish_recovery();
     }
@@ -230,6 +352,22 @@ fn clipboard_text(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok().filter(|t| !t.is_empty())
 }
 
+/// Wake the app whenever the Java side leaves a message: its answers arrive while the app may be
+/// idle, waiting for input. A glance at the folder every few milliseconds costs next to nothing.
+fn watch_inbox(dir: PathBuf, ctx: egui::Context) {
+    let spawned = std::thread::Builder::new().name("inbox".into()).spawn(move || {
+        loop {
+            if mailbox::has_mail(&dir) {
+                ctx.request_repaint();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("inbox watcher: {e}");
+    }
+}
+
 fn clear_dir(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for e in entries.flatten() {
@@ -239,7 +377,15 @@ fn clear_dir(dir: &Path) {
     }
 }
 
-fn services(dirs: &Dirs, inbox: Inbox, saves: AsyncSaves, waiting: Rc<Cell<u32>>) -> Services {
+fn services(
+    dirs: &Dirs,
+    inbox: Inbox,
+    saves: AsyncSaves,
+    waiting: Rc<Cell<u32>>,
+    messages: Rc<RefCell<Vec<String>>>,
+    saving: Rc<RefCell<Saving>>,
+) -> Services {
+    let command_saving = saving.clone();
     let open_waiting = waiting.clone();
     let outbox = dirs.outbox.clone();
     let print_outbox = dirs.outbox.clone();
@@ -248,12 +394,16 @@ fn services(dirs: &Dirs, inbox: Inbox, saves: AsyncSaves, waiting: Rc<Cell<u32>>
     Services {
         open_async: Some(Box::new(move |purpose: &str| match bridge::open(purpose) {
             Ok(()) => open_waiting.set(open_waiting.get().saturating_add(1)),
-            Err(e) => log::error!("cannot show the file picker: {e}"),
+            Err(e) => {
+                log::error!("cannot show the file picker: {e}");
+                messages.borrow_mut().push(format!("Couldn't show the file picker: {e}"));
+            }
         })),
-        // Save and Export ask for a name in the app; Android's picker then asks where.
+        // Exports ask for a name in the app; Android's picker then asks where.
         pick_save: Some(Box::new(|name: &str| Some(name.to_string()))),
+        download_command: Some(Box::new(move |command: &str| command_saving.borrow_mut().command = command.to_string())),
         async_saves: Some(saves),
-        download: Some(Box::new(move |path: &str, bytes: &[u8]| save(&outbox, &save_saves, &waiting, path, bytes))),
+        download: Some(Box::new(move |path: &str, bytes: &[u8]| save(&outbox, &save_saves, &waiting, &saving, path, bytes))),
         print: Some(Box::new(move |bytes: &[u8]| {
             let file = print_outbox.join("print.pdf");
             std::fs::write(&file, bytes).map_err(|e| e.to_string())?;
@@ -266,17 +416,24 @@ fn services(dirs: &Dirs, inbox: Inbox, saves: AsyncSaves, waiting: Rc<Cell<u32>>
     }
 }
 
-/// Hand `bytes` to Android's save picker as `path`'s file name. The save finishes later: its
-/// ticket ends when the activity reports back through the inbox.
-fn save(outbox: &Path, saves: &AsyncSaves, waiting: &Rc<Cell<u32>>, path: &str, bytes: &[u8]) -> Result<(), String> {
+/// Hand `bytes` to the activity to save as `path`'s file name: back to the file of that name the
+/// document was opened from or last saved to, or else where the user picks. The save finishes
+/// later: its ticket ends when the activity reports back through the inbox.
+fn save(outbox: &Path, saves: &AsyncSaves, waiting: &Rc<Cell<u32>>, saving: &Rc<RefCell<Saving>>, path: &str, bytes: &[u8]) -> Result<(), String> {
     let name = mailbox::safe_name(path);
+    let (write_back, command) = {
+        let mut s = saving.borrow_mut();
+        let write_back = s.writes_back();
+        (write_back, std::mem::take(&mut s.command))
+    };
     let ticket = saves.start();
     let file = outbox.join(format!("{ticket}-{name}"));
     let started = std::fs::write(&file, bytes)
         .map_err(|e| format!("cannot stage the file: {e}"))
-        .and_then(|()| bridge::save(ticket, &file.to_string_lossy(), &name, mailbox::mime_for(&name)));
+        .and_then(|()| bridge::save(ticket, &file.to_string_lossy(), &name, mailbox::mime_for(&name), write_back));
     match started {
         Ok(()) => {
+            saving.borrow_mut().commands.insert(ticket, command);
             waiting.set(waiting.get().saturating_add(1));
             Ok(())
         }
