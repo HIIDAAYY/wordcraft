@@ -1,0 +1,47 @@
+[package]
+name = "wordcraft-android"
+description = "WordCraft on Android phones and tablets (eframe NativeActivity runner, wgpu)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The Android entry point (`android_main`, exported by name) and the JNI bridge need `unsafe`,
+# which the rest of the workspace forbids. It is denied here too and allowed only in
+# `src/bridge.rs` and on `android_main`, each with a SAFETY note.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[lib]
+name = "wordcraft_android"
+# `cdylib` is what Android's NativeActivity loads (`libwordcraft_android.so`); `rlib` keeps
+# `cargo test` able to run the platform-independent gesture and inbox tests on the desktop.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wordcraft-engine = { workspace = true }
+wordcraft-ui-egui = { workspace = true }
+wordcraft-doc = { workspace = true }
+wordcraft-fonts = { workspace = true }
+wordcraft-proof = { workspace = true }
+wordcraft-control-key = { workspace = true }
+egui = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
+# The `AndroidApp` handle eframe takes (eframe doesn't re-export winit); the same version eframe uses.
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
+# Logcat (`adb logcat -s WordCraft`).
+android_logger = { version = "0.15", default-features = false }
+# The Java side of the shell (file pickers, clipboard, printing, typed text): the same JNI
+# version android-activity already brings in.
+jni = "0.22.4"
+ndk-context = "0.1"

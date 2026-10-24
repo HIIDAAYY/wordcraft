@@ -782,6 +782,10 @@ pub fn system_font_dirs() -> Vec<std::path::PathBuf> {
         if let Some(l) = std::env::var_os("LOCALAPPDATA") {
             dirs.push(std::path::PathBuf::from(l).join("Microsoft\\Windows\\Fonts"));
         }
+    } else if cfg!(target_os = "android") {
+        // Android's system fonts (Roboto, Noto for every script); vendors and product partitions
+        // add their own. Fonts the user adds go to the app's settings folder instead.
+        dirs.extend(["/system/fonts", "/product/fonts", "/system_ext/fonts", "/vendor/fonts"].map(Into::into));
     } else {
         dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(Into::into));
         if let Some(h) = &home {
