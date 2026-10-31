@@ -5260,6 +5260,7 @@ dependencies = [
  "hmac",
  "image",
  "log",
+ "miniz_oxide 0.8.9",
  "proptest",
  "quick-xml",
  "sha1",

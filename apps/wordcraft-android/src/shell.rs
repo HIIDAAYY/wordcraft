@@ -45,13 +45,20 @@ pub fn run(android: AndroidApp) {
     }
     // Files left in the outbox were handed to an earlier run's save picker and are done with.
     clear_dir(&dirs.outbox);
+    // The device's language and time zone, which the activity wrote before starting the app.
+    let system = SystemInfo::read(&files.join("system.txt"));
     // SAFETY: called on the app thread before eframe, the font database or any worker of ours
     // starts, so nothing in this process reads the environment concurrently. The settings folder
-    // (`wordcraft_control_key::settings_dir`) and the user font folders read these variables.
+    // (`wordcraft_control_key::settings_dir`) and the user font folders read these variables; the
+    // region (paper size, units, decimal comma) reads LANG, local dates and times the UTC offset.
     #[allow(unsafe_code)]
     unsafe {
         std::env::set_var("WORDCRAFT_PROFILE_DIR", &dirs.profile);
         std::env::set_var("HOME", &files);
+        if let Some(lang) = &system.posix_locale {
+            std::env::set_var("LANG", lang);
+        }
+        std::env::set_var("WORDCRAFT_UTC_OFFSET_SECS", system.utc_offset_secs.to_string());
     }
     log::info!("WordCraft {} for Android, data in {}", env!("CARGO_PKG_VERSION"), files.display());
 
@@ -69,11 +76,43 @@ pub fn run(android: AndroidApp) {
             if let Some(rs) = &cc.wgpu_render_state {
                 log::info!("wgpu backend {:?} on {}", rs.adapter.get_info().backend, rs.adapter.get_info().name);
             }
-            Ok(Box::new(Shell::new(&cc.egui_ctx, dirs)))
+            Ok(Box::new(Shell::new(&cc.egui_ctx, dirs, system.editing_language)))
         }),
     );
     if let Err(e) = result {
         log::error!("WordCraft stopped: {e}");
+    }
+}
+
+/// What the activity reports of the device at start (`system.txt`: the UTC offset in seconds,
+/// then the locale's BCP 47 tag).
+struct SystemInfo {
+    utc_offset_secs: i64,
+    /// `id_ID.UTF-8` for `id-ID`.
+    posix_locale: Option<String>,
+    /// The tag new text is written in when the device's language isn't English (`id-ID`).
+    editing_language: Option<String>,
+}
+
+impl SystemInfo {
+    fn read(path: &Path) -> Self {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let mut lines = text.lines();
+        let utc_offset_secs = wordcraft_engine::cmd::parse_utc_offset(lines.next());
+        let tag: String = lines.next().unwrap_or_default().trim().chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(35).collect();
+        let mut parts = tag.split('-');
+        let language = parts.next().unwrap_or_default().to_ascii_lowercase();
+        let region = parts.find(|p| p.len() == 2).map(str::to_ascii_uppercase);
+        let posix_locale = (language.len() >= 2).then(|| match &region {
+            Some(r) => format!("{language}_{r}.UTF-8"),
+            None => format!("{language}.UTF-8"),
+        });
+        let editing_language = (language.len() >= 2 && language != "en").then(|| match &region {
+            Some(r) => format!("{language}-{r}"),
+            None => language.clone(),
+        });
+        log::info!("device: UTC offset {utc_offset_secs} s, locale {tag:?}");
+        Self { utc_offset_secs, posix_locale, editing_language }
     }
 }
 
@@ -101,10 +140,16 @@ struct Shell {
     saving: Rc<RefCell<Saving>>,
     /// Whether the system bars' icons were last set for a light app (dark icons).
     light_bars: Option<bool>,
+    /// Frames left in which the caret is brought into view: the keyboard just came up over it.
+    reveal_caret: u8,
+    /// The ribbon was collapsed to make room while the keyboard is up; it comes back with it.
+    ribbon_auto_collapsed: bool,
+    /// The language new text is written in, from the device's (`id-ID`), until applied.
+    editing_language: Option<String>,
 }
 
 impl Shell {
-    fn new(ctx: &egui::Context, dirs: Dirs) -> Self {
+    fn new(ctx: &egui::Context, dirs: Dirs, editing_language: Option<String>) -> Self {
         let inbox = Inbox::default();
         let saves = AsyncSaves::default();
         let waiting = Rc::new(Cell::new(0));
@@ -151,6 +196,9 @@ impl Shell {
             insets: None,
             saving,
             light_bars: None,
+            reveal_caret: 0,
+            ribbon_auto_collapsed: false,
+            editing_language,
         }
     }
 
@@ -183,6 +231,10 @@ impl Shell {
                 Message::Key { code, meta } => raw.events.extend(keys::press(code, meta)),
                 Message::Insets { left, top, right, bottom } => {
                     log::info!("window insets: left {left} top {top} right {right} bottom {bottom}");
+                    // The keyboard came up: keep what's being typed in view above it, as Word does.
+                    if self.insets.is_some_and(|old| bottom > old.bottom + 100.0) {
+                        self.reveal_caret = 3;
+                    }
                     self.insets = Some(egui::epaint::MarginF32 { left, right, top, bottom });
                 }
             }
@@ -211,7 +263,14 @@ impl Shell {
 
     /// Write the preferences when they changed: Android may stop the app without warning.
     fn store_prefs(&mut self) {
-        let Ok(json) = serde_json::to_string(&self.app.prefs()) else { return };
+        // The ribbon collapsed only for the keyboard is stored as it was.
+        let collapsed = self.app.ui.ribbon_collapsed;
+        if self.ribbon_auto_collapsed {
+            self.app.ui.ribbon_collapsed = false;
+        }
+        let prefs = serde_json::to_string(&self.app.prefs());
+        self.app.ui.ribbon_collapsed = collapsed;
+        let Ok(json) = prefs else { return };
         if self.prefs_written.as_deref() == Some(json.as_str()) {
             return;
         }
@@ -261,13 +320,23 @@ impl eframe::App for Shell {
         }
         self.sync();
         self.app.logic(ctx);
+        // New text in the device's language (Indonesian on an Indonesian tablet), as Word takes
+        // the proofing language from the keyboard; WordCraft's English interface would write
+        // English. Once: a language chosen in the app later stays.
+        if let Some(tag) = self.editing_language.take() {
+            self.app.session.set_editing_language(Some(&tag));
+        }
         self.sync();
         self.store_prefs();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let (pressed_at, released) =
-            ui.ctx().input(|i| (i.pointer.any_pressed().then(|| i.pointer.press_origin()).flatten(), i.pointer.any_released()));
+        // Only the primary button (a finger's tap): a two-finger tap is a right-click, which opens
+        // a menu, not the keyboard.
+        let (pressed_at, released) = ui.ctx().input(|i| {
+            let primary = i.pointer.button_pressed(egui::PointerButton::Primary);
+            (primary.then(|| i.pointer.press_origin()).flatten(), i.pointer.button_released(egui::PointerButton::Primary))
+        });
         if let Some(pos) = pressed_at {
             self.press = Some((pos, self.app.ui.backstage));
         }
@@ -284,6 +353,23 @@ impl eframe::App for Shell {
             if let Err(e) = bridge::light_system_bars(light) {
                 log::warn!("system bars: {e}");
             }
+        }
+        if self.reveal_caret > 0 {
+            self.reveal_caret -= 1;
+            self.app.canvas.scroll_to_caret = true;
+        }
+        // With the keyboard up on a short screen (a tablet held sideways) the ribbon leaves only a
+        // few lines of the page: it folds away while typing and comes back with the keyboard.
+        let short = free.height() < 560.0;
+        // The keyboard as the screen shows it (the user may put it away by hand).
+        let keyboard_up = self.insets.is_some_and(|i| i.bottom > 200.0);
+        if keyboard_up && short && !self.ribbon_auto_collapsed && !self.app.ui.ribbon_collapsed {
+            self.app.ui.ribbon_collapsed = true;
+            self.ribbon_auto_collapsed = true;
+            self.reveal_caret = self.reveal_caret.max(2);
+        } else if !keyboard_up && self.ribbon_auto_collapsed {
+            self.app.ui.ribbon_collapsed = false;
+            self.ribbon_auto_collapsed = false;
         }
         ui.scope_builder(egui::UiBuilder::new().max_rect(free), |ui| {
             ui.set_clip_rect(free);

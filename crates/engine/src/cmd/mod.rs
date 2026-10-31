@@ -457,6 +457,37 @@ pub fn now_iso() -> String {
     iso_from_unix_secs(now_unix())
 }
 
+/// The local time's offset from UTC in seconds, as the host reported it in
+/// `WORDCRAFT_UTC_OFFSET_SECS` (the Android app does, from the device's time zone), clamped to
+/// ±18 hours; 0 (UTC) when no host says.
+pub fn local_offset_secs() -> i64 {
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        parse_utc_offset(std::env::var("WORDCRAFT_UTC_OFFSET_SECS").ok().as_deref())
+    }
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        0
+    }
+}
+
+/// A `WORDCRAFT_UTC_OFFSET_SECS` value in seconds, clamped to ±18 hours (0 when unusable).
+pub fn parse_utc_offset(v: Option<&str>) -> i64 {
+    v.and_then(|v| v.trim().parse::<i64>().ok()).map_or(0, |s| s.clamp(-18 * 3600, 18 * 3600))
+}
+
+/// Seconds since the Unix epoch on the local clock ([`local_offset_secs`]): what dates and
+/// greetings shown to the user go by. Stored timestamps stay UTC ([`now_iso`]).
+pub fn now_local_unix() -> u64 {
+    let local = i64::try_from(now_unix()).unwrap_or(i64::MAX).saturating_add(local_offset_secs());
+    u64::try_from(local).unwrap_or(0)
+}
+
+/// [`now_iso`] on the local clock (its `Z` notwithstanding: the fields are local).
+pub fn now_local_iso() -> String {
+    iso_from_unix_secs(now_local_unix())
+}
+
 /// Days since 1970-01-01 → (year, month, day).
 ///
 /// `NaiveDate` only covers about ±262143 years, but this is reached by the system clock (and by
@@ -509,6 +540,17 @@ mod iso_tests {
     fn formats_epoch_and_known_timestamps() {
         assert_eq!(iso_from_unix_secs(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso_from_unix_secs(1_760_082_785), "2025-10-10T07:53:05Z");
+    }
+
+    #[test]
+    fn utc_offsets_are_parsed_and_clamped() {
+        use super::parse_utc_offset;
+        assert_eq!(parse_utc_offset(Some("25200")), 7 * 3600, "Jakarta");
+        assert_eq!(parse_utc_offset(Some(" -18000 ")), -5 * 3600);
+        assert_eq!(parse_utc_offset(Some("999999999")), 18 * 3600);
+        assert_eq!(parse_utc_offset(Some("-9223372036854775808")), -18 * 3600);
+        assert_eq!(parse_utc_offset(Some("seven")), 0);
+        assert_eq!(parse_utc_offset(None), 0);
     }
 
     #[test]

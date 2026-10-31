@@ -83,6 +83,9 @@ public class WordCraftActivity extends NativeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Before the app starts (super.onCreate starts it): the device's UTC offset and language,
+        // for local dates and times, the paper size and the language new text is written in.
+        writeSystemInfo();
         super.onCreate(savedInstanceState);
         new File(getFilesDir(), "inbox").mkdirs();
         deleteSharedPreferences("saved-locations");
@@ -145,6 +148,20 @@ public class WordCraftActivity extends NativeActivity {
             return true;
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    private void writeSystemInfo() {
+        try {
+            java.util.TimeZone tz = java.util.TimeZone.getDefault();
+            long offset = tz.getOffset(System.currentTimeMillis()) / 1000L;
+            String tag = Locale.getDefault().toLanguageTag();
+            File file = new File(getFilesDir(), "system.txt");
+            try (FileOutputStream out = new FileOutputStream(file)) {
+                out.write((offset + "\n" + tag + "\n").getBytes(StandardCharsets.UTF_8));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "can't record the time zone and language", e);
+        }
     }
 
     // ---- Called from Rust ------------------------------------------------------------------

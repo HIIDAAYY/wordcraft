@@ -974,6 +974,14 @@ fn static_weight(file: f32, family: &str) -> f32 {
     }
 }
 
+/// Android's own interface faces (Samsung's `SEC…` script fallbacks, `… UI` variants of the
+/// script fonts): the system draws its menus with them, and a font list full of them hides the
+/// fonts a document would use. They stay usable by name and as fallbacks.
+pub fn android_internal_family(family: &str) -> bool {
+    let f = family.trim();
+    f.starts_with("SEC") || f.starts_with("Samsung") || f.ends_with(" UI") || f.ends_with("UI Medium") || f == "AndroidClock"
+}
+
 fn style_italic(style: &str) -> bool {
     let s = norm(style);
     s.contains("italic") || s.contains("oblique") || s == "it"
@@ -1064,6 +1072,9 @@ impl FontDb {
         v.extend(self.read_catalog().iter().flat_map(|c| [c.family.clone(), c.legacy.clone()]));
         v.sort_by_key(|a| a.to_lowercase());
         v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        if cfg!(target_os = "android") {
+            v.retain(|f| !android_internal_family(f));
+        }
         v
     }
 
@@ -1924,6 +1935,17 @@ mod tests_sysfonts;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn android_interface_faces_are_left_out_of_the_font_list_only() {
+        use super::android_internal_family as internal;
+        for f in ["SECFallback", "SECGujarati UI", "SamsungColorEmoji", "Noto Sans Bengali UI", "AndroidClock"] {
+            assert!(internal(f), "{f}");
+        }
+        for f in ["Liberation Serif", "Noto Serif", "Roboto", "Source Sans Pro", "Times New Roman", "Segoe UI Historic Font"] {
+            assert!(!internal(f), "{f}");
+        }
+    }
+
     #[test]
     #[ignore = "requires a locally licensed kaiu.ttf; set WORDCRAFT_TEST_KAI_FONT"]
     fn kai_contours_include_complete_character_body() {

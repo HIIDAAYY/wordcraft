@@ -193,6 +193,29 @@ pub struct Package {
     files: BTreeMap<String, Arc<Vec<u8>>>,
 }
 
+/// Entry `i`'s bytes read straight from the archive, without the CRC-32 check: stored as is, or
+/// inflated (at most `room + 1` bytes, so the caller's size limit still applies). `None` when it
+/// can't be read that way either (another compression method, a damaged stream).
+fn read_ignoring_crc<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, i: usize, room: u64) -> Option<Vec<u8>> {
+    let mut raw = zip.by_index_raw(i).ok()?;
+    let method = raw.compression();
+    let compressed = raw.compressed_size();
+    if compressed > MAX_PART {
+        return None;
+    }
+    let mut data = Vec::with_capacity(compressed.min(16 * 1024 * 1024) as usize);
+    (&mut raw).take(compressed).read_to_end(&mut data).ok()?;
+    let limit = usize::try_from(room.saturating_add(1)).unwrap_or(usize::MAX);
+    match method {
+        zip::CompressionMethod::Stored => {
+            data.truncate(limit);
+            Some(data)
+        }
+        zip::CompressionMethod::Deflated => miniz_oxide::inflate::decompress_to_vec_with_limit(&data, limit).ok(),
+        _ => None,
+    }
+}
+
 impl Package {
     pub fn open(bytes: &[u8]) -> Result<Package, DocxError> {
         Package::open_limited(bytes, MAX_PART, MAX_TOTAL)
@@ -223,10 +246,22 @@ impl Package {
             let room = max_part.min(max_total.saturating_sub(total));
             let mut buf = Vec::with_capacity(f.size().min(16 * 1024 * 1024) as usize);
             let read = (&mut f).take(room + 1).read_to_end(&mut buf);
+            drop(f);
             if let Err(e) = read {
-                // A corrupt entry: keep going unless it's a part we can't do without.
-                log::warn!("docx: zip entry {name} unreadable: {e}");
-                continue;
+                // WPS Office writes some parts (its pictures) with a wrong CRC-32. Word and WPS
+                // ignore the CRC, so read such a part again without checking it; anything else
+                // wrong with it (a damaged deflate stream) still fails.
+                match read_ignoring_crc(&mut zip, i, room) {
+                    Some(bytes) => {
+                        log::warn!("docx: zip entry {name}: {e}; read it without the CRC check, as Word does");
+                        buf = bytes;
+                    }
+                    None => {
+                        // A corrupt entry: keep going unless it's a part we can't do without.
+                        log::warn!("docx: zip entry {name} unreadable: {e}");
+                        continue;
+                    }
+                }
             }
             if buf.len() as u64 > room {
                 return Err(DocxError::Limit(format!("part {name} decompresses past the size limit")));
@@ -405,6 +440,51 @@ pub fn zip_entries(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>, DocxError> 
 
 #[cfg(test)]
 mod tests {
+
+    /// A zip with one part, `part.bin`, whose CRC-32 in both headers is wrong.
+    fn zip_with_wrong_crc(method: zip::CompressionMethod, content: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut out));
+            let opts = zip::write::SimpleFileOptions::default().compression_method(method);
+            w.start_file("part.bin", opts).unwrap();
+            w.write_all(content).unwrap();
+            w.finish().unwrap();
+        }
+        let crc = {
+            let mut z = zip::ZipArchive::new(std::io::Cursor::new(&out)).unwrap();
+            z.by_index(0).unwrap().crc32()
+        };
+        let needle = crc.to_le_bytes();
+        let mut patched = 0;
+        let mut at = 0;
+        while let Some(pos) = out[at..].windows(4).position(|w| w == needle) {
+            let p = at + pos;
+            out[p] ^= 0xFF;
+            patched += 1;
+            at = p + 4;
+        }
+        assert_eq!(patched, 2, "the CRC sits in the local header and the central directory");
+        out
+    }
+
+    #[test]
+    fn parts_with_a_wrong_crc_are_read_as_word_does() {
+        let content: Vec<u8> = (0..20_000u32).map(|n| (n % 251) as u8).collect();
+        for method in [zip::CompressionMethod::Stored, zip::CompressionMethod::Deflated] {
+            let bytes = zip_with_wrong_crc(method, &content);
+            let pkg = Package::open(&bytes).unwrap();
+            assert_eq!(pkg.get("part.bin"), Some(content.as_slice()), "{method:?}");
+        }
+    }
+
+    #[test]
+    fn a_wrong_crc_does_not_lift_the_size_limit() {
+        let content = vec![7u8; 10_000];
+        let bytes = zip_with_wrong_crc(zip::CompressionMethod::Deflated, &content);
+        assert!(matches!(Package::open_limited(&bytes, 1_000, 1_000_000), Err(DocxError::Limit(_))));
+    }
+
     use super::*;
 
     fn zip_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {

@@ -13,6 +13,8 @@ wordcraft-doc = { workspace = true }
 wordcraft-geom = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }
+# Inflating a part whose zip CRC is wrong (WPS Office writes such pictures; Word ignores the CRC).
+miniz_oxide = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 chrono = { workspace = true }

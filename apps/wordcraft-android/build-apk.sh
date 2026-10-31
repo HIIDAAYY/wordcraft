@@ -77,6 +77,30 @@ patch -s -p1 -d "$WINIT_PATCHED" <"$HERE/winit-android-modifiers.patch"
 cp "$ROOT/Cargo.lock" "$WORK/Cargo.lock.orig"
 trap 'cp "$WORK/Cargo.lock.orig" "$ROOT/Cargo.lock"' EXIT
 
+echo "==> Fonts"
+# Documents ask for Office fonts (Times New Roman, Calibri, Cambria, Arial, Courier New), which
+# only Windows and Office may ship. WordCraft draws them with their metric-compatible open
+# substitutes from craft-fonts (https://github.com/storytold/craft-fonts): Liberation Serif, Sans
+# and Mono, Carlito and Caladea, so lines and pages break where Word breaks them. Set
+# CRAFT_FONTS_DIR to a checkout (cloned into target/ otherwise). The Android build leaves out the
+# large CJK faces: Android has its own.
+if [[ -z "${CRAFT_FONTS_DIR:-}" ]]; then
+    CRAFT_FONTS_DIR="$ROOT/target/craft-fonts"
+    [[ -d "$CRAFT_FONTS_DIR/fonts" ]] || git clone -q --depth 1 https://github.com/storytold/craft-fonts "$CRAFT_FONTS_DIR"
+fi
+FONTS_STAGE="$ROOT/target/android-craft-fonts"
+rm -rf "$FONTS_STAGE"
+mkdir -p "$FONTS_STAGE/fonts"
+for d in "$CRAFT_FONTS_DIR"/fonts/*/; do
+    ln -s "$d" "$FONTS_STAGE/fonts/$(basename "$d")"
+done
+{
+    grep -E '^(Carlito|Caladea|Liberation Sans|Liberation Serif|Liberation Mono) \|' "$CRAFT_FONTS_DIR/fonts/latin-manifest.txt"
+    grep -v -E '^(#|Shippori Mincho|BIZ UD|Noto Sans CJK)' "$CRAFT_FONTS_DIR/fonts/manifest.txt"
+} >"$FONTS_STAGE/fonts/manifest.txt"
+grep -q '^Liberation Serif' "$FONTS_STAGE/fonts/manifest.txt" || { echo "error: $CRAFT_FONTS_DIR has no Liberation Serif (craft-fonts too old?)" >&2; exit 1; }
+export CRAFT_FONTS_DIR="$FONTS_STAGE"
+
 echo "==> Rust ($PROFILE, $TARGET)"
 CARGO_FLAGS=(build -p wordcraft-android --lib --target "$TARGET" --config "patch.crates-io.winit.path=\"$WINIT_PATCHED\"")
 [[ "$PROFILE" == release ]] && CARGO_FLAGS+=(--release)
