@@ -10,17 +10,14 @@
 #
 # The APK is signed with apps\wordcraft-android\keys\wordcraft-android.jks (gitignored), created
 # on the first build. Keep it: Android installs an update only over a build signed with the same key.
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $Here = $PSScriptRoot
 $Root = (Resolve-Path "$Here\..\..").Path
 
 function Need($path, $what) { if (-not (Test-Path $path)) { throw "missing ${what}: $path" } }
-function Run($exe) {
-    # Tools report progress on stderr: not an error unless they exit with one (Windows PowerShell
-    # turns redirected stderr lines into errors, which "Stop" would throw on).
-    $ErrorActionPreference = "Continue"
-    $input | & $exe @args
-    if ($LASTEXITCODE -ne 0) { throw "$exe failed ($LASTEXITCODE)" }
+# Tools report progress on stderr: not an error unless they exit with one (Windows PowerShell turns
+# redirected stderr lines into errors, which "Stop" would throw on), so each call checks its exit code.
+function Check($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed ($LASTEXITCODE)" } }
 }
 
 $Sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
@@ -63,14 +60,14 @@ Write-Host "==> winit with Android modifier keys"
 # winit 0.30 never reports Shift/Ctrl/Alt on Android; the patch is applied to a copy of the locked
 # winit for this build only, and Cargo.lock is put back afterwards.
 $WinitVersion = (Select-String -Path "$Root\Cargo.lock" -Pattern '^name = "winit"$' -Context 0, 1 | Select-Object -First 1).Context.PostContext[0] -replace 'version = |"', ''
-Push-Location $Root; Run cargo fetch --target $Target -q; Pop-Location
+Push-Location $Root; & cargo fetch --target $Target -q; Pop-Location; Check "cargo"
 $CargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { "$env:USERPROFILE\.cargo" }
 $WinitSrc = (Get-ChildItem "$CargoHome\registry\src\*\winit-$WinitVersion" -Directory | Select-Object -First 1).FullName
 $WinitPatched = "$Root\target\android-winit\winit-$WinitVersion"
 if (Test-Path $WinitPatched) { Remove-Item -Recurse -Force $WinitPatched }
 New-Item -ItemType Directory -Force (Split-Path $WinitPatched) | Out-Null
 Copy-Item -Recurse $WinitSrc $WinitPatched
-Get-Content -Raw "$Here\winit-android-modifiers.patch" | Run $Patch -s -p1 -d $WinitPatched
+Get-Content -Raw "$Here\winit-android-modifiers.patch" | & $Patch -s -p1 -d $WinitPatched; Check "$Patch"
 Copy-Item "$Root\Cargo.lock" "$Work\Cargo.lock.orig"
 
 try {
@@ -80,7 +77,7 @@ try {
     $Fonts = $env:CRAFT_FONTS_DIR
     if (-not $Fonts) {
         $Fonts = "$Root\target\craft-fonts"
-        if (-not (Test-Path "$Fonts\fonts")) { Run git clone -q --depth 1 https://github.com/storytold/craft-fonts $Fonts }
+        if (-not (Test-Path "$Fonts\fonts")) { & git clone -q --depth 1 https://github.com/storytold/craft-fonts $Fonts }; Check "git"
     }
     $Stage = "$Root\target\android-craft-fonts"
     if (Test-Path $Stage) { cmd /c rmdir /s /q $Stage }
@@ -97,20 +94,20 @@ try {
     Write-Host "==> Rust (release, $Target)"
     $WinitToml = $WinitPatched -replace '\\', '/'
     Push-Location $Root
-    Run cargo build -p wordcraft-android --lib --release --target $Target --config "patch.crates-io.winit.path='$WinitToml'"
+    & cargo build -p wordcraft-android --lib --release --target $Target --config "patch.crates-io.winit.path='$WinitToml'"; Check "cargo"
     Pop-Location
     $So = "$Work\apk\lib\$Abi\libwordcraft_android.so"
     Copy-Item "$Root\target\$Target\release\libwordcraft_android.so" $So
-    Run "$Llvm\llvm-strip.exe" --strip-unneeded $So
+    & "$Llvm\llvm-strip.exe" --strip-unneeded $So; Check "llvm-strip.exe"
     if ((& "$Llvm\llvm-readelf.exe" -d $So) -match 'libc\+\+_shared.so') {
         Copy-Item "$Ndk\toolchains\llvm\prebuilt\windows-x86_64\sysroot\usr\lib\$Target\libc++_shared.so" "$Work\apk\lib\$Abi\"
     }
 
     Write-Host "==> Java"
     $sources = Get-ChildItem -Recurse "$Here\android\java" -Filter *.java | ForEach-Object { $_.FullName }
-    Run "$Java\javac.exe" --release 11 -nowarn -classpath $AndroidJar -d "$Work\classes" @sources
+    & "$Java\javac.exe" --release 11 -nowarn -classpath $AndroidJar -d "$Work\classes" @sources; Check "javac.exe"
     $classes = Get-ChildItem -Recurse "$Work\classes" -Filter *.class | ForEach-Object { $_.FullName }
-    Run "$BuildTools\d8.bat" --release --min-api $MinSdk --lib $AndroidJar --output "$Work\dex" @classes
+    & "$BuildTools\d8.bat" --release --min-api $MinSdk --lib $AndroidJar --output "$Work\dex" @classes; Check "d8.bat"
 
     Write-Host "==> Resources"
     $Icons = "$Root\assets\app-icon\hicolor"
@@ -119,10 +116,10 @@ try {
         New-Item -ItemType Directory -Force "$Work\res\mipmap-$density" | Out-Null
         Copy-Item "$Icons\${size}x$size\apps\ai.storyteller.wordcraft.png" "$Work\res\mipmap-$density\ic_launcher.png"
     }
-    Run "$BuildTools\aapt2.exe" compile --dir "$Work\res" -o "$Work\res.zip"
-    Run "$BuildTools\aapt2.exe" link -o "$Work\unsigned.apk" -I $AndroidJar --manifest "$Here\android\AndroidManifest.xml" `
+    & "$BuildTools\aapt2.exe" compile --dir "$Work\res" -o "$Work\res.zip"; Check "aapt2.exe"
+    & "$BuildTools\aapt2.exe" link -o "$Work\unsigned.apk" -I $AndroidJar --manifest "$Here\android\AndroidManifest.xml" `
         --rename-manifest-package $AppId --min-sdk-version $MinSdk --target-sdk-version $TargetSdk `
-        --version-code $VersionCode --version-name $Version "$Work\res.zip"
+        --version-code $VersionCode --version-name $Version "$Work\res.zip"; Check "aapt2 link"
 
     Write-Host "==> Package"
     Copy-Item "$Work\dex\classes.dex" "$Work\apk\"
@@ -134,7 +131,7 @@ try {
             [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $f.FullName, $name, 'Optimal') | Out-Null
         }
     } finally { $zip.Dispose() }
-    Run "$BuildTools\zipalign.exe" -f -P 16 4 "$Work\unsigned.apk" "$Work\aligned.apk"
+    & "$BuildTools\zipalign.exe" -f -P 16 4 "$Work\unsigned.apk" "$Work\aligned.apk"; Check "zipalign.exe"
 
     Write-Host "==> Sign"
     $Keystore = if ($env:KEYSTORE) { $env:KEYSTORE } else { "$Here\keys\wordcraft-android.jks" }
@@ -142,12 +139,12 @@ try {
     $Alias = if ($env:KEY_ALIAS) { $env:KEY_ALIAS } else { "wordcraft" }
     if (-not (Test-Path $Keystore)) {
         New-Item -ItemType Directory -Force (Split-Path $Keystore) | Out-Null
-        Run "$Java\keytool.exe" -genkeypair -keystore $Keystore -storepass $Pass -keypass $Pass -alias $Alias -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=WordCraft for Android (local build)"
+        & "$Java\keytool.exe" -genkeypair -keystore $Keystore -storepass $Pass -keypass $Pass -alias $Alias -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=WordCraft for Android (local build)"; Check "keytool.exe"
         Write-Host "    created signing key $Keystore (keep it to install updates over this build)"
     }
     $Apk = "$Out\WordCraft-$Version-arm64.apk"
-    Run "$BuildTools\apksigner.bat" sign --ks $Keystore --ks-pass "pass:$Pass" --ks-key-alias $Alias --min-sdk-version $MinSdk --out $Apk "$Work\aligned.apk"
-    Run "$BuildTools\apksigner.bat" verify $Apk
+    & "$BuildTools\apksigner.bat" sign --ks $Keystore --ks-pass "pass:$Pass" --ks-key-alias $Alias --min-sdk-version $MinSdk --out $Apk "$Work\aligned.apk"; Check "apksigner.bat"
+    & "$BuildTools\apksigner.bat" verify $Apk; Check "apksigner.bat"
     Write-Host ("==> $Apk ({0:N0} MB)" -f ((Get-Item $Apk).Length / 1MB))
 } finally {
     Copy-Item "$Work\Cargo.lock.orig" "$Root\Cargo.lock" -Force
