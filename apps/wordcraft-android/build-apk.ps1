@@ -18,7 +18,6 @@ function Need($path, $what) { if (-not (Test-Path $path)) { throw "missing ${wha
 # Tools report progress on stderr: not an error unless they exit with one (Windows PowerShell turns
 # redirected stderr lines into errors, which "Stop" would throw on), so each call checks its exit code.
 function Check($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed ($LASTEXITCODE)" } }
-}
 
 $Sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
 if (-not $Sdk -or -not (Test-Path $Sdk)) { throw "set ANDROID_HOME to your Android SDK" }
