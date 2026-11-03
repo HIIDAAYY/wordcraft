@@ -342,6 +342,17 @@ impl Counters {
             *v = if f.started { v.saturating_add(1) } else { f.first.unwrap_or(def.start) };
             *f = LevelFlags { started: true, first: None };
         }
+        // Levels above that haven't counted yet count their start now, as if an item of theirs
+        // came first (Word 16, measured: two level-2 items "1.a", "1.b", then a level-1 item
+        // "2.", not "1."; after a level-3 item under "3.", a level-2 item is "3.b").
+        for k in 0..lv {
+            if let (Some(v), Some(f)) = (st.get_mut(k), fl.get_mut(k))
+                && !f.started
+            {
+                *v = f.first.unwrap_or_else(|| level_def(k).map_or(1, |l| l.start));
+                *f = LevelFlags { started: true, first: None };
+            }
+        }
         // Deeper levels restart, unless they never restart or only restart after a level above
         // this one (Word's lvlRestart).
         for (d, (deeper, f)) in st.iter_mut().zip(fl.iter_mut()).enumerate().skip(lv + 1) {
@@ -403,9 +414,26 @@ mod tests {
         assert_eq!(c.next_label(&n, id, 2).unwrap().0, "1.02");
         assert_eq!(c.next_label(&n, id, 1).unwrap().0, "");
         assert_eq!(c.next_label(&n, id, 2).unwrap().0, "2.01");
-        // Levels it doesn't define still come from the abstract list.
-        assert_eq!(c.next_label(&n, id, 0).unwrap().0, "1.");
+        // Levels it doesn't define still come from the abstract list. Level 1 counted its start
+        // when level 2 was first used (Word), so its first own item is the second.
+        assert_eq!(c.next_label(&n, id, 0).unwrap().0, "2.");
         assert_eq!(n.level(id, 2).map(|l| l.format), Some(NumFormat::DecimalZero));
+    }
+
+    #[test]
+    fn deeper_items_first_count_the_levels_above() {
+        // Word 16, measured: b1 b2 (level 2), A (1), c1 (2), B (1), d2 (3), x1 (2), C (1), e1 (2)
+        // read 1.a 1.b 2. 2.a 3. i 3.b 4. 4.a.
+        let mut n = Numbering::default();
+        let id = n.add_list(ListKind::Numbered);
+        let lvl = |format, text: &str| Level { format, text: text.into(), ..Level::default() };
+        if let Some(num) = n.nums.iter_mut().find(|x| x.id == id) {
+            num.level_overrides =
+                vec![(0, lvl(NumFormat::Decimal, "%1.")), (1, lvl(NumFormat::LowerLetter, "%1.%2")), (2, lvl(NumFormat::LowerRoman, "%3"))];
+        }
+        let mut c = Counters::default();
+        let got: Vec<String> = [1, 1, 0, 1, 0, 2, 1, 0, 1].iter().map(|l| c.next_label(&n, id, *l).unwrap().0).collect();
+        assert_eq!(got, ["1.a", "1.b", "2.", "2.a", "3.", "i", "3.b", "4.", "4.a"]);
     }
 
     #[test]
