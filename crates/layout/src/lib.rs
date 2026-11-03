@@ -1689,6 +1689,8 @@ struct PageBuilder<'a> {
     /// The previous paragraph ended with a page break (its mark stayed with the break): the next
     /// paragraph, first on the new page, gets no space before (Word).
     after_break_mark: bool,
+    /// Where the text ended on the page a page break left (see `after_break_mark`).
+    break_end_y: f32,
     /// The next section starts on a new page: this section's closing mark, when empty, needs no
     /// room (Word leaves it on a full page rather than starting a page for it).
     next_starts_page: bool,
@@ -2398,6 +2400,7 @@ fn layout_pass(
         orig_bottom: 0.0,
         prev: None,
         after_break_mark: false,
+        break_end_y: 0.0,
         next_starts_page: false,
         restart_at: None,
         excl: Vec::new(),
@@ -3615,6 +3618,24 @@ fn para_notes(doc: &Document, p: &Paragraph, pl: &ParaLayout) -> Vec<(usize, u32
 /// A closing mark before a continuous section takes no room after content. An otherwise empty
 /// section starting a new page retains its paragraph line.
 fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, body_top: f32) {
+    // An empty mark closing a section right after a page break, before a section that starts a new
+    // page: Word keeps it on the page the break ended rather than giving it a page of its own
+    // (Word 16, measured: page break, empty next-page section mark, text: two pages, not three).
+    if !pb.web
+        && p.section.is_some()
+        && pb.next_starts_page
+        && p.text.is_empty()
+        && p.objects.is_empty()
+        && !ctx.has_label(p)
+        && pb.take_back_break_page()
+    {
+        let (prev, bottom, content_bottom) = (pb.prev.clone(), pb.bottom, pb.content_bottom);
+        pb.y = pb.break_end_y;
+        pb.bottom = f32::MAX / 4.0;
+        place_para_in_flow(ctx, pb, p, block, body_top);
+        (pb.bottom, pb.prev, pb.content_bottom) = (bottom, prev, content_bottom);
+        return;
+    }
     if !pb.web && ctx.quiet_marks.binary_search(&block).is_ok() {
         let follows_section = block.checked_sub(1).and_then(|i| ctx.doc.body.get(i)).and_then(|b| b.as_para()).is_some_and(|p| p.section.is_some());
         let section = pb.sect_idx;
@@ -4081,8 +4102,10 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
             });
         match forced_break {
             Some(LineEnd::PageBreak) if mark_with_break => {
+                let end = pb.y;
                 pb.new_page(block, body_top);
                 pb.after_break_mark = true;
+                pb.break_end_y = end;
             }
             Some(LineEnd::PageBreak) if starts_with_break && !pb.web => {
                 pb.new_page(block, body_top);

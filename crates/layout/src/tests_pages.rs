@@ -605,3 +605,20 @@ fn multiple_spacing_leading_may_run_into_the_bottom_margin() {
     assert_eq!(on_first_page(0.1), 11, "the 11th line's text fits; its leading runs into the margin");
     assert_eq!(on_first_page(-0.1), 10, "the 11th line's text doesn't fit");
 }
+
+#[test]
+fn an_empty_section_mark_after_a_page_break_stays_on_the_breaks_page() {
+    // Word 16, measured: "A", a paragraph of only a page break, an empty paragraph closing a
+    // next-page section, then "B": two pages (the mark stays with the break), not a blank page
+    // between them. With text in the closing paragraph it takes a page of its own (three).
+    use wordcraft_doc::section::SectionProps;
+    let pages = |closing: &str| {
+        let mut d = Document::from_text(&format!("A\n\u{000C}\n{closing}\nB"));
+        d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(2)).unwrap().section = Some(Box::new(SectionProps::default()));
+        let l = lay(&d);
+        let b = l.caret(&Pos::body(3, 0)).unwrap().page;
+        (l.pages.len(), b)
+    };
+    assert_eq!(pages(""), (2, 1), "B starts the second page");
+    assert_eq!(pages("S"), (3, 2));
+}

@@ -144,6 +144,10 @@ struct Shell {
     reveal_caret: u8,
     /// The ribbon was collapsed to make room while the keyboard is up; it comes back with it.
     ribbon_auto_collapsed: bool,
+    /// The document and window width the zoom was last fitted for, and whether the shell chose
+    /// Page Width itself (see [`Shell::fit_page`]).
+    fit_key: Option<(Option<PathBuf>, i32)>,
+    auto_fit: bool,
     /// The language new text is written in, from the device's (`id-ID`), until applied.
     editing_language: Option<String>,
 }
@@ -198,6 +202,8 @@ impl Shell {
             light_bars: None,
             reveal_caret: 0,
             ribbon_auto_collapsed: false,
+            fit_key: None,
+            auto_fit: false,
             editing_language,
         }
     }
@@ -330,6 +336,33 @@ impl eframe::App for Shell {
         self.store_prefs();
     }
 
+    /// A page wider than the screen at 100% (a tablet held upright) opens at Page Width, as Word
+    /// on a tablet does, instead of cut off at the right; turned sideways again, the page goes
+    /// back to 100% when it fits. A zoom the user chose stays.
+    fn fit_page(&mut self, width: f32) {
+        let key = (self.app.session.path.clone(), width.round() as i32);
+        if self.fit_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.fit_key = Some(key);
+        let page = self.app.session.doc.last_section.page_w * 96.0 / 72.0;
+        // The vertical ruler, the scroll bar and the gaps around the page.
+        let fits = page + 70.0 <= width;
+        let view = &self.app.session.view;
+        let at_100 = view.fit.is_empty() && (view.zoom - 1.0).abs() < 0.01;
+        let value = if !fits && at_100 {
+            serde_json::json!("pageWidth")
+        } else if fits && self.auto_fit && view.fit == "pageWidth" {
+            serde_json::json!(100)
+        } else {
+            return;
+        };
+        self.auto_fit = !fits;
+        if let Err(e) = self.app.run("view.zoom", serde_json::json!({ "value": value })) {
+            log::warn!("zoom: {e}");
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Only the primary button (a finger's tap): a two-finger tap is a right-click, which opens
         // a menu, not the keyboard.
@@ -371,6 +404,7 @@ impl eframe::App for Shell {
             self.app.ui.ribbon_collapsed = false;
             self.ribbon_auto_collapsed = false;
         }
+        self.fit_page(free.width());
         ui.scope_builder(egui::UiBuilder::new().max_rect(free), |ui| {
             ui.set_clip_rect(free);
             self.app.ui(ui);
