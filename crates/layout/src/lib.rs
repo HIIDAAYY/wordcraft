@@ -3935,7 +3935,11 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
             // with widow control, one more with it). Without notes the space after may run past
             // the bottom margin as usual, and so may the extra leading of multiple line spacing.
             let has_notes = !pb.notes.is_empty() || !new_notes.is_empty() || !line_notes.is_empty();
-            let bottom = pb.y + lead + (l.top + if has_notes { l.height } else { l.fit_height } - first.top);
+            // Only into the bottom margin itself: a footer taller than the margin that pushed the
+            // body up keeps the whole line clear of it.
+            let at_margin = pb.bottom >= pb.sect.page_h - pb.sect.margin_bottom - 0.01;
+            let fit = if has_notes || !at_margin { l.height } else { l.fit_height };
+            let bottom = pb.y + lead + (l.top + fit - first.top);
             let tail = if has_notes && l1 + 1 == n {
                 *after_on_page.get_or_insert_with(|| space_after_kept(ctx, block, &pl.rp, label.is_some()))
             } else {
