@@ -3756,6 +3756,11 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
     let after_break_mark = std::mem::take(&mut pb.after_break_mark);
     if pb.at_top() && (after_break_mark || (broke_before && ctx.doc.settings.compat_mode >= 15)) {
         before = 0.0;
+    } else if pb.at_top() && pl.rp.contextual_spacing && prev_para.as_ref().is_some_and(|(style, ..)| *style == pl.rp.style) {
+        // Contextual spacing reaches across a section break: a heading after an empty mark of
+        // its own style closing the previous section starts at the top of its page (Word 16,
+        // measured: 18pt before, same style, contextual spacing: none).
+        before = 0.0;
     } else if pb.at_top()
         && !ctx.doc.settings.sum_paragraph_spacing
         && let Some((_, _, after, _, _)) = &prev_para

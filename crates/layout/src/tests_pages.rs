@@ -622,3 +622,27 @@ fn an_empty_section_mark_after_a_page_break_stays_on_the_breaks_page() {
     assert_eq!(pages(""), (2, 1), "B starts the second page");
     assert_eq!(pages("S"), (3, 2));
 }
+
+#[test]
+fn contextual_spacing_reaches_across_a_section_break() {
+    // Word 16, measured: "A" closing a section, then "B" in the same style with 18pt before and
+    // contextual spacing starts at the top margin of the next page; without contextual spacing
+    // it keeps its space before.
+    use wordcraft_doc::section::SectionProps;
+    let top = |contextual: bool| {
+        let mut d = Document::from_text("A\nB");
+        d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(0)).unwrap().section = Some(Box::new(SectionProps::default()));
+        for i in 0..2 {
+            let p = d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(i)).unwrap();
+            p.props.space_after = Some(0.0);
+            p.props.contextual_spacing = Some(contextual);
+        }
+        d.para_mut(StoryRef::Body, &wordcraft_doc::Path::top(1)).unwrap().props.space_before = Some(18.0);
+        let l = lay(&d);
+        let c = l.caret(&Pos::body(1, 0)).unwrap();
+        (c.page, c.top)
+    };
+    let (with, without) = (top(true), top(false));
+    assert_eq!((with.0, without.0), (1, 1));
+    assert!((without.1 - with.1 - 18.0).abs() < 0.5, "contextual {with:?}, not {without:?}");
+}
