@@ -63,10 +63,15 @@ Push-Location $Root; & cargo fetch --target $Target -q; Pop-Location; Check "car
 $CargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { "$env:USERPROFILE\.cargo" }
 $WinitSrc = (Get-ChildItem "$CargoHome\registry\src\*\winit-$WinitVersion" -Directory | Select-Object -First 1).FullName
 $WinitPatched = "$Root\target\android-winit\winit-$WinitVersion"
-if (Test-Path $WinitPatched) { Remove-Item -Recurse -Force $WinitPatched }
-New-Item -ItemType Directory -Force (Split-Path $WinitPatched) | Out-Null
-Copy-Item -Recurse $WinitSrc $WinitPatched
-Get-Content -Raw "$Here\winit-android-modifiers.patch" | & $Patch -s -p1 -d $WinitPatched; Check "$Patch"
+# Patched once and kept (a fresh copy every build would rebuild winit and all above it).
+$PatchHash = (Get-FileHash "$Here\winit-android-modifiers.patch").Hash
+if (-not (Test-Path "$WinitPatched\.patched") -or (Get-Content "$WinitPatched\.patched") -ne $PatchHash) {
+    if (Test-Path $WinitPatched) { Remove-Item -Recurse -Force $WinitPatched }
+    New-Item -ItemType Directory -Force (Split-Path $WinitPatched) | Out-Null
+    Copy-Item -Recurse $WinitSrc $WinitPatched
+    Get-Content -Raw "$Here\winit-android-modifiers.patch" | & $Patch -s -p1 -d $WinitPatched; Check "patch"
+    Set-Content "$WinitPatched\.patched" $PatchHash
+}
 Copy-Item "$Root\Cargo.lock" "$Work\Cargo.lock.orig"
 
 try {
