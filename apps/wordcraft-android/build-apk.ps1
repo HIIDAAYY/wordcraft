@@ -19,7 +19,7 @@ function Run($exe) {
     # Tools report progress on stderr: not an error unless they exit with one (Windows PowerShell
     # turns redirected stderr lines into errors, which "Stop" would throw on).
     $ErrorActionPreference = "Continue"
-    & $exe @args
+    $input | & $exe @args
     if ($LASTEXITCODE -ne 0) { throw "$exe failed ($LASTEXITCODE)" }
 }
 
