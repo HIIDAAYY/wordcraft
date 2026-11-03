@@ -991,7 +991,7 @@ pub fn android_internal_family(family: &str) -> bool {
     }
     if let ["Noto", "Sans" | "Serif", script, ..] = words.as_slice() {
         const KEEP: &[&str] = &["Arabic", "Mono", "Display", "Symbols", "Math"];
-        return !KEEP.contains(script) || (words.len() > 3 && *script != "Arabic");
+        return !KEEP.contains(script) || words.len() > 3;
     }
     false
 }
