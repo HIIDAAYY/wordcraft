@@ -78,16 +78,19 @@ try {
         $Fonts = "$Root\target\craft-fonts"
         if (-not (Test-Path "$Fonts\fonts")) { & git clone -q --depth 1 https://github.com/storytold/craft-fonts $Fonts }; Check "git"
     }
+    # Staged in place and rewritten only when it changes, so a rebuild doesn't recompile the fonts
+    # crate and everything above it.
     $Stage = "$Root\target\android-craft-fonts"
-    if (Test-Path $Stage) { cmd /c rmdir /s /q $Stage }
     New-Item -ItemType Directory -Force "$Stage\fonts" | Out-Null
     foreach ($d in Get-ChildItem "$Fonts\fonts" -Directory) {
-        New-Item -ItemType Junction -Path "$Stage\fonts\$($d.Name)" -Target $d.FullName | Out-Null
+        if (-not (Test-Path "$Stage\fonts\$($d.Name)")) { New-Item -ItemType Junction -Path "$Stage\fonts\$($d.Name)" -Target $d.FullName | Out-Null }
     }
     $lines = @(Get-Content "$Fonts\fonts\latin-manifest.txt" | Where-Object { $_ -match '^(Carlito|Caladea|Liberation Sans|Liberation Serif|Liberation Mono) \|' })
     $lines += Get-Content "$Fonts\fonts\manifest.txt" | Where-Object { $_ -notmatch '^(#|Shippori Mincho|BIZ UD|Noto Sans CJK)' }
     if (-not ($lines | Where-Object { $_ -match '^Liberation Serif' })) { throw "$Fonts has no Liberation Serif (craft-fonts too old?)" }
-    [IO.File]::WriteAllLines("$Stage\fonts\manifest.txt", [string[]]$lines)
+    $manifest = "$Stage\fonts\manifest.txt"
+    $text = ($lines -join "`n") + "`n"
+    if (-not (Test-Path $manifest) -or [IO.File]::ReadAllText($manifest) -ne $text) { [IO.File]::WriteAllText($manifest, $text) }
     $env:CRAFT_FONTS_DIR = $Stage
 
     Write-Host "==> Rust (release, $Target)"
@@ -103,10 +106,14 @@ try {
     }
 
     Write-Host "==> Java"
-    $sources = Get-ChildItem -Recurse "$Here\android\java" -Filter *.java | ForEach-Object { $_.FullName }
-    & "$Java\javac.exe" --release 11 -nowarn -classpath $AndroidJar -d "$Work\classes" @sources; Check "javac.exe"
-    $classes = Get-ChildItem -Recurse "$Work\classes" -Filter *.class | ForEach-Object { $_.FullName }
-    & "$BuildTools\d8.bat" --release --min-api $MinSdk --lib $AndroidJar --output "$Work\dex" @classes; Check "d8.bat"
+    # Through argument files: Windows PowerShell mangles some arguments it passes to programs.
+    $q = { param($x) '"' + ($x -replace '\\', '/') + '"' }
+    $javacArgs = @("--release", "11", "-nowarn", "-classpath", (& $q $AndroidJar), "-d", (& $q "$Work\classes"))
+    $javacArgs += Get-ChildItem -Recurse "$Here\android\java" -Filter *.java | ForEach-Object { & $q $_.FullName }
+    [IO.File]::WriteAllLines("$Work\javac.args", [string[]]$javacArgs)
+    & "$Java\javac.exe" "@$Work\javac.args"; Check "javac"
+    & "$Java\jar.exe" cf "$Work\classes.jar" -C "$Work\classes" .; Check "jar"
+    & "$BuildTools\d8.bat" --release --min-api $MinSdk --lib $AndroidJar --output "$Work\dex" "$Work\classes.jar"; Check "d8"
 
     Write-Host "==> Resources"
     $Icons = "$Root\assets\app-icon\hicolor"
