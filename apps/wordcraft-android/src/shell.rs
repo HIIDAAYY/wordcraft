@@ -209,9 +209,9 @@ impl Shell {
     }
 
     /// Deliver what the Java side left in the inbox.
-    /// A page wider than the screen at 100% (a tablet held upright) opens at Page Width, as Word
-    /// on a tablet does, instead of cut off at the right; turned sideways again, the page goes
-    /// back to 100% when it fits. A zoom the user chose stays.
+    /// A page wider than the screen (a tablet held upright, or a zoom saved on a desktop) opens at
+    /// Page Width, as Word on a tablet does, instead of cut off at the right; turned sideways
+    /// again, the page goes back to 100% when it fits. A zoom the user chooses later stays.
     fn fit_page(&mut self, width: f32) {
         let key = (self.app.session.path.clone(), width.round() as i32);
         if self.fit_key.as_ref() == Some(&key) {
@@ -222,15 +222,17 @@ impl Shell {
         // The vertical ruler, the scroll bar and the gaps around the page.
         let fits = page + 70.0 <= width;
         let view = &self.app.session.view;
-        let at_100 = view.fit.is_empty() && (view.zoom - 1.0).abs() < 0.01;
-        let value = if !fits && at_100 {
+        // At 100%, or at the zoom the document was saved with (Word on a tablet fits the page to
+        // the screen whatever zoom a desktop saved).
+        let cut_off = view.fit.is_empty() && page * view.zoom.clamp(0.1, 5.0) + 70.0 > width;
+        let value = if cut_off {
             serde_json::json!("pageWidth")
         } else if fits && self.auto_fit && view.fit == "pageWidth" {
             serde_json::json!(100)
         } else {
             return;
         };
-        self.auto_fit = !fits;
+        self.auto_fit = cut_off;
         if let Err(e) = self.app.run("view.zoom", serde_json::json!({ "value": value })) {
             log::warn!("zoom: {e}");
         }
