@@ -16,6 +16,9 @@ $Root = (Resolve-Path "$Here\..\..").Path
 
 function Need($path, $what) { if (-not (Test-Path $path)) { throw "missing ${what}: $path" } }
 function Run($exe) {
+    # Tools report progress on stderr: not an error unless they exit with one (Windows PowerShell
+    # turns redirected stderr lines into errors, which "Stop" would throw on).
+    $ErrorActionPreference = "Continue"
     & $exe @args
     if ($LASTEXITCODE -ne 0) { throw "$exe failed ($LASTEXITCODE)" }
 }
@@ -67,8 +70,7 @@ $WinitPatched = "$Root\target\android-winit\winit-$WinitVersion"
 if (Test-Path $WinitPatched) { Remove-Item -Recurse -Force $WinitPatched }
 New-Item -ItemType Directory -Force (Split-Path $WinitPatched) | Out-Null
 Copy-Item -Recurse $WinitSrc $WinitPatched
-Get-Content -Raw "$Here\winit-android-modifiers.patch" | & $Patch -s -p1 -d $WinitPatched
-if ($LASTEXITCODE -ne 0) { throw "patching winit failed" }
+Get-Content -Raw "$Here\winit-android-modifiers.patch" | Run $Patch -s -p1 -d $WinitPatched
 Copy-Item "$Root\Cargo.lock" "$Work\Cargo.lock.orig"
 
 try {
