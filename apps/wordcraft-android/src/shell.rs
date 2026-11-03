@@ -209,6 +209,33 @@ impl Shell {
     }
 
     /// Deliver what the Java side left in the inbox.
+    /// A page wider than the screen at 100% (a tablet held upright) opens at Page Width, as Word
+    /// on a tablet does, instead of cut off at the right; turned sideways again, the page goes
+    /// back to 100% when it fits. A zoom the user chose stays.
+    fn fit_page(&mut self, width: f32) {
+        let key = (self.app.session.path.clone(), width.round() as i32);
+        if self.fit_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.fit_key = Some(key);
+        let page = self.app.session.doc.last_section.page_w * 96.0 / 72.0;
+        // The vertical ruler, the scroll bar and the gaps around the page.
+        let fits = page + 70.0 <= width;
+        let view = &self.app.session.view;
+        let at_100 = view.fit.is_empty() && (view.zoom - 1.0).abs() < 0.01;
+        let value = if !fits && at_100 {
+            serde_json::json!("pageWidth")
+        } else if fits && self.auto_fit && view.fit == "pageWidth" {
+            serde_json::json!(100)
+        } else {
+            return;
+        };
+        self.auto_fit = !fits;
+        if let Err(e) = self.app.run("view.zoom", serde_json::json!({ "value": value })) {
+            log::warn!("zoom: {e}");
+        }
+    }
+
     fn read_inbox(&mut self, raw: &mut egui::RawInput) {
         for message in mailbox::drain(&self.dirs.inbox) {
             match message {
@@ -334,33 +361,6 @@ impl eframe::App for Shell {
         }
         self.sync();
         self.store_prefs();
-    }
-
-    /// A page wider than the screen at 100% (a tablet held upright) opens at Page Width, as Word
-    /// on a tablet does, instead of cut off at the right; turned sideways again, the page goes
-    /// back to 100% when it fits. A zoom the user chose stays.
-    fn fit_page(&mut self, width: f32) {
-        let key = (self.app.session.path.clone(), width.round() as i32);
-        if self.fit_key.as_ref() == Some(&key) {
-            return;
-        }
-        self.fit_key = Some(key);
-        let page = self.app.session.doc.last_section.page_w * 96.0 / 72.0;
-        // The vertical ruler, the scroll bar and the gaps around the page.
-        let fits = page + 70.0 <= width;
-        let view = &self.app.session.view;
-        let at_100 = view.fit.is_empty() && (view.zoom - 1.0).abs() < 0.01;
-        let value = if !fits && at_100 {
-            serde_json::json!("pageWidth")
-        } else if fits && self.auto_fit && view.fit == "pageWidth" {
-            serde_json::json!(100)
-        } else {
-            return;
-        };
-        self.auto_fit = !fits;
-        if let Err(e) = self.app.run("view.zoom", serde_json::json!({ "value": value })) {
-            log::warn!("zoom: {e}");
-        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
