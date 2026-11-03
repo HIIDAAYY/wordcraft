@@ -974,28 +974,48 @@ fn static_weight(file: f32, family: &str) -> f32 {
     }
 }
 
-/// Android's own interface faces (Samsung's `SEC…` script fallbacks, `… UI` variants of the
-/// script fonts): the system draws its menus with them, and a font list full of them hides the
-/// fonts a document would use. They stay usable by name and as fallbacks.
+/// Android's own interface faces (Samsung's `SEC…` script fallbacks and number faces, `… UI`
+/// variants of the script fonts, Roboto's static copies), the script fonts Android keeps for
+/// text in other writing systems (`Noto Sans Gurmukhi`, `Noto Serif Lao`…) and their weights:
+/// the system draws its menus and foreign scripts with them, and a font list of several hundred
+/// of them hides the fonts a document would use. They stay usable by name and as fallbacks;
+/// Noto Sans, Noto Serif and the Arabic faces stay listed.
 pub fn android_internal_family(family: &str) -> bool {
     let f = family.trim();
-    f.starts_with("SEC") || f.starts_with("Samsung") || f.ends_with(" UI") || f.ends_with("UI Medium") || f == "AndroidClock"
+    let words: Vec<&str> = f.split_whitespace().collect();
+    if f.starts_with("SEC") || f.starts_with("New SEC") || f.starts_with("Samsung") || f.starts_with("RobotoStatic") || f == "AndroidClock" {
+        return true;
+    }
+    if f.ends_with(" UI") || (words.first().is_some_and(|w| *w == "Noto" || *w == "Roboto") && words.contains(&"UI")) {
+        return true;
+    }
+    if let ["Noto", "Sans" | "Serif", script, ..] = words.as_slice() {
+        const KEEP: &[&str] = &["Arabic", "Mono", "Display", "Symbols", "Math"];
+        return !KEEP.contains(script) || (words.len() > 3 && *script != "Arabic");
+    }
+    false
 }
+
+/// The open font drawn for Word's font `family` ([`word_font_aliases`]), when it has one.
+pub fn word_font_clone(family: &str) -> Option<&'static str> {
+    WORD_CLONES.iter().find(|(word, _)| word.eq_ignore_ascii_case(family.trim())).map(|(_, clone)| *clone)
+}
+
+const WORD_CLONES: &[(&str, &str)] = &[
+    ("Times New Roman", "Liberation Serif"),
+    ("Arial", "Liberation Sans"),
+    ("Courier New", "Liberation Mono"),
+    ("Calibri", "Carlito"),
+    ("Cambria", "Caladea"),
+];
 
 /// Word's everyday fonts whose metric-compatible open clone is in `families`, for the font list
 /// on systems that don't have Word's fonts (Android): picking Times New Roman keeps that name in
 /// the document, so Word shows it as Times New Roman, while the text is drawn with Liberation
 /// Serif at the same widths.
 pub fn word_font_aliases(families: &[String]) -> Vec<String> {
-    const CLONES: &[(&str, &str)] = &[
-        ("Times New Roman", "Liberation Serif"),
-        ("Arial", "Liberation Sans"),
-        ("Courier New", "Liberation Mono"),
-        ("Calibri", "Carlito"),
-        ("Cambria", "Caladea"),
-    ];
     let has = |name: &str| families.iter().any(|f| f.eq_ignore_ascii_case(name));
-    CLONES.iter().filter(|(word, clone)| has(clone) && !has(word)).map(|(word, _)| (*word).to_string()).collect()
+    WORD_CLONES.iter().filter(|(word, clone)| has(clone) && !has(word)).map(|(word, _)| (*word).to_string()).collect()
 }
 
 fn style_italic(style: &str) -> bool {
@@ -1958,10 +1978,33 @@ mod tests {
     #[test]
     fn android_interface_faces_are_left_out_of_the_font_list_only() {
         use super::android_internal_family as internal;
-        for f in ["SECFallback", "SECGujarati UI", "SamsungColorEmoji", "Noto Sans Bengali UI", "AndroidClock"] {
+        for f in [
+            "SECFallback",
+            "SECGujarati UI",
+            "SamsungColorEmoji",
+            "Noto Sans Bengali UI",
+            "AndroidClock",
+            "New SEC Num VF 700",
+            "Noto Sans Gurmukhi UI SemiBold",
+            "Noto Serif Lao Medium",
+            "Noto Sans Georgian",
+            "Noto Sans Arabic Black",
+            "RobotoStatic RegularStatic",
+        ] {
             assert!(internal(f), "{f}");
         }
-        for f in ["Liberation Serif", "Noto Serif", "Roboto", "Source Sans Pro", "Times New Roman", "Segoe UI Historic Font"] {
+        for f in [
+            "Liberation Serif",
+            "Noto Serif",
+            "Noto Sans",
+            "Noto Sans Mono",
+            "Noto Naskh Arabic",
+            "Noto Sans Arabic",
+            "Roboto",
+            "Source Sans Pro",
+            "Times New Roman",
+            "Segoe UI Historic Font",
+        ] {
             assert!(!internal(f), "{f}");
         }
     }

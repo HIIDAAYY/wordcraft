@@ -805,7 +805,8 @@ fn page_number(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 fn date_time(s: &mut Session, v: &Value) -> CmdResult {
-    let fmt = p::str(v, "format").unwrap_or("M/d/yyyy");
+    let lang = s.typing_props().lang.or_else(|| s.doc.styles.default_chr.lang.clone()).or_else(|| s.editing_lang.clone());
+    let fmt = p::str(v, "format").unwrap_or_else(|| default_date_format(lang.as_deref()));
     let text = format_date(fmt);
     if p::bool(v, "update").unwrap_or(false) {
         let props = s.typing_props();
@@ -820,6 +821,26 @@ fn date_time(s: &mut Session, v: &Value) -> CmdResult {
         type_text(s, &text)?;
     }
     sel_result(s)
+}
+
+/// The date picture Insert › Date & Time uses for text in language `lang` (a BCP 47 tag): the
+/// short date of that language, as Word's first suggestion: `11/3/2026` in US English,
+/// `03/11/2026` in Indonesian or British English, `03.11.2026` in German.
+pub fn default_date_format(lang: Option<&str>) -> &'static str {
+    let tag = lang.unwrap_or("en-US").trim().replace('_', "-").to_ascii_lowercase();
+    let primary = tag.split('-').next().unwrap_or("en");
+    match (primary, tag.as_str()) {
+        (_, "en-us" | "en" | "es-us" | "en-ph") | ("fil", _) => "M/d/yyyy",
+        ("ja" | "zh", _) => "yyyy/M/d",
+        ("ko" | "sv" | "lt", _) => "yyyy-MM-dd",
+        ("hu", _) => "yyyy. MM. dd.",
+        ("de" | "ru" | "pl" | "cs" | "sk" | "fi" | "nb" | "nn" | "no" | "tr" | "uk" | "ro" | "hr" | "sl" | "sr" | "bg" | "kk" | "az", _) => {
+            "dd.MM.yyyy"
+        }
+        ("nl", _) => "d-M-yyyy",
+        ("da", _) => "dd-MM-yyyy",
+        _ => "dd/MM/yyyy",
+    }
 }
 
 /// Format today's date with a Word picture (`M/d/yyyy`, `MMMM d, yyyy`, `yyyy-MM-dd`, `dddd`…).

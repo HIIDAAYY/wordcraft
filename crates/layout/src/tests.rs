@@ -8889,7 +8889,17 @@ fn space_after_may_overflow_the_bottom_margin_without_notes() {
         let bottom_margin = d.last_section.page_h - d.last_section.margin_bottom;
         let (pieces, _) = para_pieces(&l, t);
         let &(_, _, _, bottom) = pieces.last().unwrap();
-        assert!(bottom <= bottom_margin + 0.01, "before {before}: {bottom}");
+        // Multiple spacing's extra leading below the last line may run past it too.
+        let leading = l
+            .pages
+            .iter()
+            .flat_map(|p| &p.items)
+            .find_map(|it| match it {
+                Placed::Lines { story: StoryRef::Body, path, para, .. } if path.0 == [t as u32] => para.lines.last().map(|x| x.height - x.fit_height),
+                _ => None,
+            })
+            .unwrap_or(0.0);
+        assert!(bottom - leading <= bottom_margin + 0.01, "before {before}: {bottom}");
         if bottom > bottom_margin - 6.0 {
             tight += 1;
         }

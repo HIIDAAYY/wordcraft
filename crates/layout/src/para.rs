@@ -172,6 +172,11 @@ pub struct Line {
     /// The text's own ascent and descent on this line, without line-spacing leading (the caret's extent).
     pub text_asc: f32,
     pub text_desc: f32,
+    /// How much of `height` has to fit above the bottom margin for the line to stay on a page.
+    /// Multiple spacing above single adds its extra leading below the text, and Word lets that
+    /// leading run into the bottom margin: a 1.5-spaced 12pt Times New Roman line (20.7pt) fits
+    /// in the last 13.9pt of a page but not in 13.7pt (Word 16, measured).
+    pub fit_height: f32,
     /// Cluster index range.
     pub c0: usize,
     pub c1: usize,
@@ -2601,12 +2606,17 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
         if first_x0.is_none() {
             first_x0 = xs.first().copied();
         }
+        let fit_height = match (rp.line_spacing, grid) {
+            (LineSpacing::Multiple(m), None) if m > 1.0 => ((text_natural + label_extra).max(text_pictures)).min(height),
+            _ => height,
+        };
         let mut line = Line {
             top,
             height,
             baseline,
             text_asc,
             text_desc,
+            fit_height,
             c0,
             c1,
             xs,
@@ -2655,6 +2665,10 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                     baseline: top + if grid.is_some() { h - desc } else { baseline_offset(rp.line_spacing, asc, h, desc) },
                     text_asc: asc,
                     text_desc: desc,
+                    fit_height: match (rp.line_spacing, grid) {
+                        (LineSpacing::Multiple(m), None) if m > 1.0 => natural.min(h),
+                        _ => h,
+                    },
                     c0: n,
                     c1: n,
                     xs: vec![x0],

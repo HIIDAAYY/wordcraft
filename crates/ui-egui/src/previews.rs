@@ -402,6 +402,9 @@ pub fn font_entry_image(name: &str, ppp: f32) -> egui::ColorImage {
     let db = wordcraft_fonts::FontDb::global();
     let face = db
         .preview_face(name)
+        // Word's fonts listed for their open clones (Times New Roman → Liberation Serif) show
+        // in the clone's face, the one their text is drawn with.
+        .or_else(|| wordcraft_fonts::word_font_clone(name).and_then(|c| db.preview_face(c)))
         .filter(|f| name.chars().filter(|c| !c.is_whitespace()).all(|c| f.covers(c)))
         .unwrap_or_else(|| db.face(wordcraft_fonts::FALLBACK_FAMILY, "Regular"));
     let img = wordcraft_render::render_text_line(&face, name, 13.0, 244.0, 22.0, 2.0, ppp);

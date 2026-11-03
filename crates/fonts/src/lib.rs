@@ -16,7 +16,7 @@ pub mod word;
 
 pub use fontdb::{
     FALLBACK_FAMILY, FONT_FILE_EXTS, FaceRef, FontDb, FontFace, FontFormat, Installed, LocalName, MAX_FONT_FILE_BYTES, UserFont, UserFontError,
-    base_style, bundled, decode_font_file, is_font_file_name, name_language_matches, sniff, system_font_dirs,
+    base_style, bundled, decode_font_file, is_font_file_name, name_language_matches, sniff, system_font_dirs, word_font_clone,
 };
 pub use harfrust::Feature;
 use harfrust::{Direction, ShapeOptions, Tag, UnicodeBuffer};

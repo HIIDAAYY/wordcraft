@@ -554,6 +554,19 @@ mod iso_tests {
     }
 
     #[test]
+    fn insert_date_follows_the_text_language() {
+        use super::insert::{default_date_format as f, format_date_parts};
+        assert_eq!(f(None), "M/d/yyyy");
+        assert_eq!(f(Some("en-US")), "M/d/yyyy");
+        assert_eq!(f(Some("id-ID")), "dd/MM/yyyy");
+        assert_eq!(f(Some("en-GB")), "dd/MM/yyyy");
+        assert_eq!(f(Some("de_DE")), "dd.MM.yyyy");
+        assert_eq!(f(Some("ja-JP")), "yyyy/M/d");
+        assert_eq!(f(Some("")), "dd/MM/yyyy");
+        assert_eq!(format_date_parts(f(Some("id-ID")), 2026, 11, 3, (9, 28, 0), 20_760), "03/11/2026");
+    }
+
+    #[test]
     fn formats_leap_day_and_year_end() {
         assert_eq!(iso_from_unix_secs(1_709_164_800), "2024-02-29T00:00:00Z");
         assert_eq!(iso_from_unix_secs(951_782_400), "2000-02-29T00:00:00Z");

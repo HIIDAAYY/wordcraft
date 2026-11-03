@@ -569,3 +569,39 @@ fn a_roman_page_number_in_the_footer_stays_roman_with_the_page_count_in_the_body
         assert_eq!(glyphs, want.chars().count(), "page {}: the footer should show {want}", p.number);
     }
 }
+
+#[test]
+fn multiple_spacing_leading_may_run_into_the_bottom_margin() {
+    // Word 16, measured: 3.0-spaced 12pt Times New Roman lines (41.4pt) put an 11th line on a
+    // page whose last 13.9pt are free (the line's single height is 13.8pt) and move it to the
+    // next page when 13.7pt are; 1.5 and 2.0 spacing behave the same. A report cover that
+    // filled its page in Word spilled its last line onto a page of its own.
+    use wordcraft_doc::props::LineSpacing;
+    let doc = |bottom_gap: Option<f32>| {
+        let mut d = Document::from_text(&"Line\n".repeat(29));
+        for b in d.body.iter_mut() {
+            if let Block::Para(p) = Arc::make_mut(b) {
+                p.props.line_spacing = Some(LineSpacing::Multiple(3.0));
+                p.props.space_after = Some(0.0);
+                p.props.space_before = Some(0.0);
+            }
+        }
+        if let Some(gap) = bottom_gap {
+            d.last_section.margin_bottom = gap;
+        }
+        d
+    };
+    let probe = lay(&doc(None));
+    let Some(Placed::Lines { para, .. }) = probe.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+    let line = &para.lines[0];
+    let (h, single) = (line.height, line.text_asc + line.text_desc);
+    assert!((h - single * 3.0).abs() < 0.01, "3.0 spacing: {h} for a {single}pt line");
+    let on_first_page = |slack: f32| {
+        let s = &doc(None).last_section;
+        let bottom = s.page_h - s.margin_top - (10.0 * h + single + slack);
+        let l = lay(&doc(Some(bottom)));
+        l.pages[0].items.iter().filter(|i| matches!(i, Placed::Lines { story: StoryRef::Body, .. })).count()
+    };
+    assert_eq!(on_first_page(0.1), 11, "the 11th line's text fits; its leading runs into the margin");
+    assert_eq!(on_first_page(-0.1), 10, "the 11th line's text doesn't fit");
+}
