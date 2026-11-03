@@ -982,6 +982,22 @@ pub fn android_internal_family(family: &str) -> bool {
     f.starts_with("SEC") || f.starts_with("Samsung") || f.ends_with(" UI") || f.ends_with("UI Medium") || f == "AndroidClock"
 }
 
+/// Word's everyday fonts whose metric-compatible open clone is in `families`, for the font list
+/// on systems that don't have Word's fonts (Android): picking Times New Roman keeps that name in
+/// the document, so Word shows it as Times New Roman, while the text is drawn with Liberation
+/// Serif at the same widths.
+pub fn word_font_aliases(families: &[String]) -> Vec<String> {
+    const CLONES: &[(&str, &str)] = &[
+        ("Times New Roman", "Liberation Serif"),
+        ("Arial", "Liberation Sans"),
+        ("Courier New", "Liberation Mono"),
+        ("Calibri", "Carlito"),
+        ("Cambria", "Caladea"),
+    ];
+    let has = |name: &str| families.iter().any(|f| f.eq_ignore_ascii_case(name));
+    CLONES.iter().filter(|(word, clone)| has(clone) && !has(word)).map(|(word, _)| (*word).to_string()).collect()
+}
+
 fn style_italic(style: &str) -> bool {
     let s = norm(style);
     s.contains("italic") || s.contains("oblique") || s == "it"
@@ -1074,6 +1090,10 @@ impl FontDb {
         v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         if cfg!(target_os = "android") {
             v.retain(|f| !android_internal_family(f));
+            let aliases = word_font_aliases(&v);
+            v.extend(aliases);
+            v.sort_by_key(|a| a.to_lowercase());
+            v.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         }
         v
     }
@@ -1944,6 +1964,14 @@ mod tests {
         for f in ["Liberation Serif", "Noto Serif", "Roboto", "Source Sans Pro", "Times New Roman", "Segoe UI Historic Font"] {
             assert!(!internal(f), "{f}");
         }
+    }
+
+    #[test]
+    fn word_fonts_are_listed_when_their_clones_are_installed() {
+        let fams: Vec<String> = ["Caladea", "Carlito", "Liberation Serif", "Liberation Sans", "Arial"].iter().map(|s| s.to_string()).collect();
+        let a = super::word_font_aliases(&fams);
+        assert_eq!(a, ["Times New Roman", "Calibri", "Cambria"], "Arial is installed already; no Liberation Mono, no Courier New");
+        assert!(super::word_font_aliases(&[]).is_empty());
     }
 
     #[test]
