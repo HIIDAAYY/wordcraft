@@ -3629,11 +3629,13 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
         && !ctx.has_label(p)
         && pb.take_back_break_page()
     {
-        let (prev, bottom, content_bottom) = (pb.prev.clone(), pb.bottom, pb.content_bottom);
+        // The next section's first paragraph then meets it as after any section break: its space
+        // before less this mark's space after (Word: 18pt before after an 8pt mark leaves 10pt).
+        let (bottom, content_bottom) = (pb.bottom, pb.content_bottom);
         pb.y = pb.break_end_y;
         pb.bottom = f32::MAX / 4.0;
         place_para_in_flow(ctx, pb, p, block, body_top);
-        (pb.bottom, pb.prev, pb.content_bottom) = (bottom, prev, content_bottom);
+        (pb.bottom, pb.content_bottom) = (bottom, content_bottom);
         return;
     }
     if !pb.web && ctx.quiet_marks.binary_search(&block).is_ok() {
