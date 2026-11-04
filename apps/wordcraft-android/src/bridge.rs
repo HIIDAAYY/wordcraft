@@ -51,6 +51,16 @@ pub fn open(purpose: &str) -> Result<(), String> {
     })
 }
 
+/// `openRecent(String name)`: read the document called `name` again from where it was last
+/// opened from or saved to, into the inbox, as a pick would.
+pub fn open_recent(name: &str) -> Result<(), String> {
+    with_activity(|env, activity| {
+        let name = env.new_string(name)?;
+        env.call_method(activity, jni_str!("openRecent"), jni_sig!("(Ljava/lang/String;)V"), &[JValue::Object(&name)])?;
+        Ok(())
+    })
+}
+
 /// `saveDocument(long ticket, String path, String name, String mime, boolean writeBack)`: save
 /// the file at `path` (written by the app, in its private outbox) as `name`: with `write_back`,
 /// over the file of that name the document came from when the app may still write there;

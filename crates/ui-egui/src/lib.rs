@@ -181,6 +181,12 @@ pub struct Services {
     /// used while File › Options names none. File › New lists personal templates from it and Save
     /// as Word Template starts in it. `None` (web) hides personal templates.
     pub templates_dir: Option<std::path::PathBuf>,
+    /// Android: a Recent entry the host knows where to find (it has no path the app can open):
+    /// its name and folder as the user knows them. `None` from the host shows the entry as a path.
+    pub place: Option<Box<dyn Fn(&str) -> Option<(String, String)>>>,
+    /// Android: open a Recent entry the host knows (it reads the file again and hands the
+    /// document over through `inbox`). `false`: not one of its own; it opens as a path.
+    pub open_recent: Option<Box<dyn Fn(&str) -> bool>>,
 }
 
 /// How Save in the Save Changes prompt went.

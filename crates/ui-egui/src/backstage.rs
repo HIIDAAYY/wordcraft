@@ -516,21 +516,28 @@ fn open_list(app: &mut WordApp, ui: &mut Ui) {
     }
     let shown = app.ui.recent.iter().take(app.ui.recent_shown()).cloned().collect::<Vec<_>>();
     let file_name = |p: &str| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(p.to_string());
-    let names = shown.iter().map(|p| file_name(p)).collect::<Vec<_>>();
-    for (p, name) in shown.iter().zip(&names) {
+    // Android: entries the host knows by name show its name and folder for them.
+    let places = shown.iter().map(|p| app.services.place.as_ref().and_then(|place| place(p))).collect::<Vec<_>>();
+    let names = shown.iter().zip(&places).map(|(p, place)| place.as_ref().map_or_else(|| file_name(p), |(n, _)| n.clone())).collect::<Vec<_>>();
+    for ((p, name), place) in shown.iter().zip(&names).zip(&places) {
+        let where_ = place.as_ref().map_or_else(|| p.clone(), |(_, folder)| folder.clone());
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 40.0), Sense::click());
         // Two documents with the same file name are told apart by their path, as on screen.
-        let spoken = if names.iter().filter(|n| *n == name).count() > 1 { format!("{name}, {p}") } else { name.clone() };
+        let spoken = if names.iter().filter(|n| *n == name).count() > 1 { format!("{name}, {where_}") } else { name.clone() };
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &spoken));
         if resp.hovered() {
             ui.painter().rect_filled(r, 4.0, t.hover);
         }
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 18.0, r.center().y), vec2(22.0, 22.0)), "printLayout", t.icon, t.accent);
         let display_name = crate::canvas::bidi_display(name);
-        let display_p = crate::canvas::bidi_display(p);
+        let display_p = crate::canvas::bidi_display(&where_);
         ui.painter().text(pos2(r.min.x + 40.0, r.min.y + 13.0), Align2::LEFT_CENTER, display_name.as_ref(), medium(13.0), t.text);
         ui.painter().text(pos2(r.min.x + 40.0, r.min.y + 29.0), Align2::LEFT_CENTER, display_p.as_ref(), regular(11.0), t.text_dim);
-        if resp.clicked() {
+        if resp.clicked() && app.services.open_recent.as_ref().is_some_and(|open| open(p)) {
+            // The host reads the file again; the document arrives on a later frame.
+            ui.ctx().data_mut(|d| d.remove::<String>(open_error_id()));
+            app.ui.backstage = false;
+        } else if resp.clicked() {
             let failed = open_recent(app, p).err();
             ui.ctx().data_mut(|d| d.insert_temp(open_error_id(), failed.unwrap_or_default()));
         }
@@ -1284,6 +1291,33 @@ mod tests {
         h.run_steps(4);
         assert!(!h.state().ui.backstage, "the Letter button opens the template");
         assert!(!h.state().session.doc.plain_text(wordcraft_doc::StoryRef::Body).is_empty(), "with the template's text");
+    }
+
+    /// Android: a Recent document the host knows by name shows the host's name and folder and
+    /// opens through the host, which reads it again (the app has no path to it).
+    #[test]
+    fn the_host_names_and_opens_its_recent_documents() {
+        use egui::accesskit::Role;
+        use std::sync::{Arc, Mutex};
+        let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+        let capture = opened.clone();
+        let services = Services {
+            place: Some(Box::new(|entry: &str| (entry == "Laporan.docx").then(|| ("Laporan.docx".to_string(), "Download/Tugas".to_string())))),
+            open_recent: Some(Box::new(move |entry: &str| {
+                capture.lock().unwrap().push(entry.to_string());
+                entry == "Laporan.docx"
+            })),
+            ..Default::default()
+        };
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), services);
+        a.ui.recent = vec!["Laporan.docx".into()];
+        a.run("ui.backstage", json!({"value": true, "page": "open"})).unwrap();
+        let mut h = a11y_harness(a);
+        assert!(h.query_by_label("Download/Tugas").is_some(), "the folder the host names");
+        h.get_by_role_and_label(Role::Button, "Laporan.docx").click();
+        h.run_steps(3);
+        assert_eq!(*opened.lock().unwrap(), vec!["Laporan.docx".to_string()], "the host opens it");
+        assert!(!h.state().ui.backstage, "File closes; the document arrives later");
     }
 
     /// Clicking the back arrow closes the File page and gives the keyboard back to the page,

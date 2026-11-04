@@ -25,6 +25,7 @@
 
 pub mod keys;
 pub mod mailbox;
+pub mod places;
 pub mod saving;
 pub mod touch;
 

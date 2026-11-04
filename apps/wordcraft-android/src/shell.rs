@@ -11,6 +11,7 @@ use wordcraft_ui_egui::async_saves::{AsyncSaves, SaveOutcome};
 use wordcraft_ui_egui::{Inbox, Services, UiState, WordApp};
 
 use crate::mailbox::{self, Message, Outcome};
+use crate::places::Known;
 use crate::saving::Saving;
 use crate::{bridge, keys, touch::Touches};
 
@@ -25,11 +26,19 @@ struct Dirs {
     outbox: PathBuf,
     /// The system clipboard's text, as the activity last saw it.
     clipboard: PathBuf,
+    /// The activity's list of where each document name was last opened from or saved to.
+    known: PathBuf,
 }
 
 impl Dirs {
     fn new(files: &Path) -> Self {
-        Self { profile: files.join("profile"), inbox: files.join("inbox"), outbox: files.join("outbox"), clipboard: files.join("clipboard.txt") }
+        Self {
+            profile: files.join("profile"),
+            inbox: files.join("inbox"),
+            outbox: files.join("outbox"),
+            clipboard: files.join("clipboard.txt"),
+            known: files.join("known-locations.txt"),
+        }
     }
 }
 
@@ -150,6 +159,8 @@ struct Shell {
     auto_fit: bool,
     /// The language new text is written in, from the device's (`id-ID`), until applied.
     editing_language: Option<String>,
+    /// Where documents opened or saved here are, by name (Recent).
+    known: Rc<RefCell<Known>>,
 }
 
 impl Shell {
@@ -162,7 +173,9 @@ impl Shell {
         let region = wordcraft_ui_egui::i18n::system_region();
         let mut session = Session::new(wordcraft_engine::blank_document(&region));
         session.system_region = region;
-        let mut app = WordApp::new(session, services(&dirs, inbox.clone(), saves.clone(), waiting.clone(), messages.clone(), saving.clone()));
+        let known = Rc::new(RefCell::new(Known::new(dirs.known.clone())));
+        let mut app =
+            WordApp::new(session, services(&dirs, inbox.clone(), saves.clone(), waiting.clone(), messages.clone(), saving.clone(), known.clone()));
         let prefs_path = dirs.profile.join("ui.json");
         let stored = std::fs::read(&prefs_path).ok();
         if let Some(ui) = stored.as_deref().and_then(UiState::from_json) {
@@ -205,6 +218,7 @@ impl Shell {
             fit_key: None,
             auto_fit: false,
             editing_language,
+            known,
         }
     }
 
@@ -289,11 +303,13 @@ impl Shell {
 
     /// Keep the save hooks' view of the document current, and the Recent list to files this
     /// device can open again. Android hands the app a file's contents, not a path to it, so a
-    /// document opened or saved here is known only by its name; reopening one goes through
-    /// File › Open, whose system picker has its own Recent list.
+    /// document opened or saved here is known by its name: Recent keeps the names the activity
+    /// knows an address for, and reopens them from there (`open_recent`).
     fn sync(&mut self) {
         self.saving.borrow_mut().has_file = self.app.session.path.is_some();
-        self.app.ui.recent.retain(|p| Path::new(p).is_absolute());
+        let mut known = self.known.borrow_mut();
+        known.refresh();
+        self.app.ui.recent.retain(|p| Path::new(p).is_absolute() || known.address(p).is_some());
     }
 
     /// Write the preferences when they changed: Android may stop the app without warning.
@@ -506,9 +522,13 @@ fn services(
     waiting: Rc<Cell<u32>>,
     messages: Rc<RefCell<Vec<String>>>,
     saving: Rc<RefCell<Saving>>,
+    known: Rc<RefCell<Known>>,
 ) -> Services {
     let command_saving = saving.clone();
     let open_waiting = waiting.clone();
+    let recent_waiting = waiting.clone();
+    let recent_messages = messages.clone();
+    let recent_known = known.clone();
     let outbox = dirs.outbox.clone();
     let print_outbox = dirs.outbox.clone();
     let clipboard = dirs.clipboard.clone();
@@ -534,6 +554,20 @@ fn services(
         inbox: Some(inbox),
         clipboard_text: Some(Box::new(move || clipboard_text(&clipboard))),
         templates_dir: Some(dirs.profile.join("Templates")),
+        place: Some(Box::new(move |entry: &str| known.borrow().place(entry))),
+        open_recent: Some(Box::new(move |entry: &str| {
+            if recent_known.borrow().address(entry).is_none() {
+                return false;
+            }
+            match bridge::open_recent(entry) {
+                Ok(()) => recent_waiting.set(recent_waiting.get().saturating_add(1)),
+                Err(e) => {
+                    log::error!("cannot open {entry}: {e}");
+                    recent_messages.borrow_mut().push(format!("Couldn't open {entry}: {e}"));
+                }
+            }
+            true
+        })),
         ..Default::default()
     }
 }

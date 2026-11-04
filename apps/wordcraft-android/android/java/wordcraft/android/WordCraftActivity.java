@@ -86,6 +86,8 @@ public class WordCraftActivity extends NativeActivity {
         // Before the app starts (super.onCreate starts it): the device's UTC offset and language,
         // for local dates and times, the paper size and the language new text is written in.
         writeSystemInfo();
+        // The app's Recent list reads where each document is from this list at its start.
+        listKnown();
         super.onCreate(savedInstanceState);
         new File(getFilesDir(), "inbox").mkdirs();
         deleteSharedPreferences("saved-locations");
@@ -398,12 +400,12 @@ public class WordCraftActivity extends NativeActivity {
             toast("Couldn't open " + name + ": " + e.getMessage());
             return;
         }
-        if (!tmp.renameTo(new File(dir, tmp.getName().substring(0, tmp.getName().length() - 4)))) {
-            tmp.delete();
-            return;
-        }
+        // Remembered before the app sees the document, so its Recent list knows where it is.
         if (rememberForSaving) {
             remember(name, uri);
+        }
+        if (!tmp.renameTo(new File(dir, tmp.getName().substring(0, tmp.getName().length() - 4)))) {
+            tmp.delete();
         }
     }
 
@@ -463,12 +465,49 @@ public class WordCraftActivity extends NativeActivity {
 
     private void remember(String name, Uri uri) {
         if (name != null && uri != null) {
-            known().edit().putString(name, uri.toString()).apply();
+            known().edit().putString(name, uri.toString()).commit();
+            listKnown();
         }
     }
 
     private void forget(String name) {
-        known().edit().remove(name).apply();
+        known().edit().remove(name).commit();
+        listKnown();
+    }
+
+    /** Write the names and addresses for the app's Recent list (known-locations.txt, one
+     *  "name TAB address" per line). */
+    private synchronized void listKnown() {
+        StringBuilder text = new StringBuilder();
+        for (java.util.Map.Entry<String, ?> e : known().getAll().entrySet()) {
+            if (e.getValue() instanceof String && e.getKey().indexOf('\t') < 0 && e.getKey().indexOf('\n') < 0) {
+                text.append(e.getKey()).append('\t').append((String) e.getValue()).append('\n');
+            }
+        }
+        File list = new File(getFilesDir(), "known-locations.txt");
+        File tmp = new File(getFilesDir(), "known-locations.txt.tmp");
+        try (OutputStream out = new FileOutputStream(tmp)) {
+            out.write(text.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            Log.w(TAG, "can't list known locations", e);
+            return;
+        }
+        if (!tmp.renameTo(list)) {
+            tmp.delete();
+        }
+    }
+
+    /** Open a Recent document again from where it was last opened from or saved to. */
+    public void openRecent(final String name) {
+        io.execute(() -> {
+            Uri uri = knownUri(name);
+            if (uri == null) {
+                toast("Couldn't find " + name + " any more. Open it with File > Open.");
+            } else {
+                deliver(uri, true);
+            }
+            post("done", new byte[0]);
+        });
     }
 
     /** Where name was last opened from or saved to, while the app still has write permission. */
