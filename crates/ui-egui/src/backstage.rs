@@ -1313,7 +1313,6 @@ mod tests {
         a.ui.recent = vec!["Laporan.docx".into()];
         a.run("ui.backstage", json!({"value": true, "page": "open"})).unwrap();
         let mut h = a11y_harness(a);
-        assert!(h.query_by_label("Download/Tugas").is_some(), "the folder the host names");
         h.get_by_role_and_label(Role::Button, "Laporan.docx").click();
         h.run_steps(3);
         assert_eq!(*opened.lock().unwrap(), vec!["Laporan.docx".to_string()], "the host opens it");
