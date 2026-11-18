@@ -1,0 +1,29 @@
+# craft-libs' craft-opc at 93dac78c (storytold/craft-libs), patched for the Android fork: a part
+# whose zip CRC-32 is wrong (WPS Office writes its pictures so; Word ignores the CRC) is read
+# again without the check instead of being left out. Used through `[patch]` in the workspace's
+# Cargo.toml; drop it once craft-opc reads such parts itself.
+[package]
+name = "craft-opc"
+description = "Open Packaging Conventions (ECMA-376 Part 2): the ZIP container of DOCX, XLSX and PPTX files, with bounded reads, part names, relationships and content types, and a package writer."
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/storytold/craft-libs"
+publish = false
+
+[features]
+# `zip64_entry_count_sample`, the regression input for a reader's own entry-count test.
+test-support = ["craft-zip/test-support"]
+
+[dependencies]
+craft-xml = { git = "https://github.com/storytold/craft-libs", rev = "93dac78c93a7f1fd66e2022edeb089233b1dc45a", version = "=0.1.0" }
+log = "0.4"
+thiserror = "2"
+craft-zip = { git = "https://github.com/storytold/craft-libs", rev = "93dac78c93a7f1fd66e2022edeb089233b1dc45a", version = "=0.1.0" }
+# Reading a part again without its CRC check (`read_ignoring_crc`): the raw entry, inflated here.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+miniz_oxide = "0.8"
+
+[dev-dependencies]
+craft-zip = { git = "https://github.com/storytold/craft-libs", rev = "93dac78c93a7f1fd66e2022edeb089233b1dc45a", version = "=0.1.0", features = ["test-support"] }
