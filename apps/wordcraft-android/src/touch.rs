@@ -14,7 +14,7 @@
 //!
 //! Pure input rewriting over [`egui::RawInput`], so it is tested on the desktop.
 
-use egui::{Event, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, TouchId, TouchPhase, Vec2};
+use egui::{Event, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, Pos2, RawInput, TouchId, TouchPhase, Vec2};
 
 /// How far (points) a finger may wander and still be a tap or a long press.
 const SLOP: f32 = 10.0;
@@ -250,7 +250,7 @@ impl Touches {
 }
 
 fn wheel(delta: Vec2, phase: TouchPhase, modifiers: Modifiers) -> Event {
-    Event::MouseWheel { unit: MouseWheelUnit::Point, delta, phase, modifiers }
+    Event::MouseWheel { unit: MouseWheelUnit::Point, delta, phase, source: MouseWheelSource::Trackpad, modifiers }
 }
 
 fn button(pos: Pos2, button: PointerButton, pressed: bool, modifiers: Modifiers) -> Event {

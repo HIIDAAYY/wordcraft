@@ -361,7 +361,7 @@ impl eframe::App for Shell {
         if self.touches.process(raw) {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
-        self.app.raw_input_hook(raw);
+        self.app.raw_input_hook(ctx, raw);
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
