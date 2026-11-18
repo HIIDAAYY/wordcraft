@@ -58,10 +58,14 @@ New-Item -ItemType Directory -Force "$Work\classes", "$Work\dex", "$Work\res", "
 Write-Host "==> winit with Android modifier keys"
 # winit 0.30 never reports Shift/Ctrl/Alt on Android; the patch is applied to a copy of the locked
 # winit for this build only, and Cargo.lock is put back afterwards.
-$WinitVersion = (Select-String -Path "$Root\Cargo.lock" -Pattern '^name = "winit"$' -Context 0, 1 | Select-Object -First 1).Context.PostContext[0] -replace 'version = |"', ''
+# The workspace takes winit from storytold's fork (patch.crates-io), pinned by its rev.
 Push-Location $Root; & cargo fetch --target $Target -q; Pop-Location; Check "cargo"
+$WinitRev = ([regex]::Match((Get-Content -Raw "$Root\Cargo.toml"), 'winit = \{ git = "https://github.com/storytold/winit.git", rev = "([0-9a-f]+)" \}')).Groups[1].Value
+if (-not $WinitRev) { throw "Cargo.toml has no storytold/winit rev" }
 $CargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { "$env:USERPROFILE\.cargo" }
-$WinitSrc = (Get-ChildItem "$CargoHome\registry\src\*\winit-$WinitVersion" -Directory | Select-Object -First 1).FullName
+$WinitSrc = (Get-ChildItem "$CargoHome\git\checkouts\winit-*\$($WinitRev.Substring(0, 7))" -Directory | Select-Object -First 1).FullName
+if (-not $WinitSrc) { throw "winit $WinitRev is not in the cargo cache" }
+$WinitVersion = $WinitRev
 $WinitPatched = "$Root\target\android-winit\winit-$WinitVersion"
 # Patched once and kept (a fresh copy every build would rebuild winit and all above it).
 $PatchHash = (Get-FileHash "$Here\winit-android-modifiers.patch").Hash

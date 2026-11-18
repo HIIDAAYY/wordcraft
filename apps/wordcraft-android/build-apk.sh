@@ -66,10 +66,12 @@ echo "==> winit with Android modifier keys"
 # winit 0.30 never reports Shift/Ctrl/Alt on Android, so a hardware keyboard's Ctrl+Z typed "z".
 # winit-android-modifiers.patch fixes that; it is applied to a copy of the locked winit for this
 # build only (Cargo.lock is put back afterwards, the desktop builds never see it).
-WINIT_VERSION="$(awk '/^name = "winit"$/{getline; gsub(/version = |"/, ""); print; exit}' "$ROOT/Cargo.lock")"
+# The workspace takes winit from storytold's fork (patch.crates-io), pinned by its rev.
 (cd "$ROOT" && cargo fetch --target "$TARGET" -q)
-WINIT_SRC="$(ls -d "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/"winit-$WINIT_VERSION" | head -1)"
-WINIT_PATCHED="$ROOT/target/android-winit/winit-$WINIT_VERSION"
+WINIT_REV="$(sed -n 's|^winit = { git = "https://github.com/storytold/winit.git", rev = "\([0-9a-f]*\)" }|\1|p' "$ROOT/Cargo.toml" | head -1)"
+WINIT_SRC="$(ls -d "${CARGO_HOME:-$HOME/.cargo}"/git/checkouts/winit-*/"${WINIT_REV:0:7}" | head -1)"
+[[ -d "$WINIT_SRC" ]] || { echo "error: winit $WINIT_REV is not in the cargo cache" >&2; exit 1; }
+WINIT_PATCHED="$ROOT/target/android-winit/winit-$WINIT_REV"
 rm -rf "$WINIT_PATCHED"
 mkdir -p "$(dirname "$WINIT_PATCHED")"
 cp -R "$WINIT_SRC" "$WINIT_PATCHED"
